@@ -67,21 +67,13 @@ int main() {
     std::string line;
     std::string token;
 
-    std::cout << "id name Aether-C" << std::endl;
-    std::cout << "id author Jules" << std::endl;
-    std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
-    std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
-    std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
-    std::cout << "option name UCI_Chess960 type check default false" << std::endl;
-    std::cout << "uciok" << std::endl;
-
     while (std::getline(std::cin, line)) {
         std::stringstream ss(line);
         ss >> token;
 
         if (token == "uci") {
             std::cout << "id name Aether-C" << std::endl;
-            std::cout << "id author Jules" << std::endl;
+            std::cout << "id author Bastiball21" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
             std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
             std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
