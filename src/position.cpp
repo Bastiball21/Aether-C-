@@ -1,6 +1,7 @@
 #include "position.h"
 #include <sstream>
 #include <cstring>
+#include <cassert>
 
 // Zobrist Keys (Placeholder)
 // In a real engine, these should be initialized with random numbers.
@@ -434,7 +435,6 @@ bool Position::is_repetition() const {
     // But we have full history.
 
     // We iterate backwards.
-    int count = 0;
     // We start from history.size() - 2 because back() is current state pushed?
     // Wait, history only contains *previous* states. `make_move` pushes current state (key, rule50, etc) *before* update?
     // No. `make_move`:
@@ -462,12 +462,76 @@ bool Position::is_repetition() const {
 }
 
 std::string Position::fen() const {
-    // Placeholder logic for FEN generation if needed, skipping for speed
-    return "";
+    // Piece placement
+    std::string out;
+    for (int r = 7; r >= 0; --r) {
+        int empty = 0;
+        for (int f = 0; f < 8; ++f) {
+            Square sq = square_of((File)f, (Rank)r);
+            Piece p = board[sq];
+            if (p == NO_PIECE) {
+                empty++;
+                continue;
+            }
+            if (empty) {
+                out += char('0' + empty);
+                empty = 0;
+            }
+
+            char c = '?';
+            switch (p) {
+                case W_PAWN:   c = 'P'; break;
+                case W_KNIGHT: c = 'N'; break;
+                case W_BISHOP: c = 'B'; break;
+                case W_ROOK:   c = 'R'; break;
+                case W_QUEEN:  c = 'Q'; break;
+                case W_KING:   c = 'K'; break;
+                case B_PAWN:   c = 'p'; break;
+                case B_KNIGHT: c = 'n'; break;
+                case B_BISHOP: c = 'b'; break;
+                case B_ROOK:   c = 'r'; break;
+                case B_QUEEN:  c = 'q'; break;
+                case B_KING:   c = 'k'; break;
+                default:       c = '?'; break;
+            }
+            out += c;
+        }
+        if (empty) out += char('0' + empty);
+        if (r) out += '/';
+    }
+
+    // Side to move
+    out += (side == WHITE) ? " w " : " b ";
+
+    // Castling rights
+    if (castling == 0) {
+        out += "- ";
+    } else {
+        if (castling & 1) out += 'K';
+        if (castling & 2) out += 'Q';
+        if (castling & 4) out += 'k';
+        if (castling & 8) out += 'q';
+        out += ' ';
+    }
+
+    // En passant
+    if (ep_square == SQ_NONE) {
+        out += "- ";
+    } else {
+        out += char('a' + file_of(ep_square));
+        out += char('1' + rank_of(ep_square));
+        out += ' ';
+    }
+
+    // Halfmove clock (rule50) and fullmove number
+    int fullmove = halfmove_clock / 2 + 1;
+    out += std::to_string(rule50);
+    out += ' ';
+    out += std::to_string(fullmove);
+
+    return out;
 }
 
-#include "position.h"
-#include <cassert>
 
 #ifndef NDEBUG
 void Position::debug_validate() const {

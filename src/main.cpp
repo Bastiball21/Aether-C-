@@ -12,9 +12,18 @@
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
+    // Expect UCI move like "e2e4" or "e7e8q"
+    if (str.size() < 4) return 0;
+
+    auto in_range = [](char c, char lo, char hi) { return c >= lo && c <= hi; };
+    if (!in_range(str[0], 'a', 'h') || !in_range(str[2], 'a', 'h') ||
+        !in_range(str[1], '1', '8') || !in_range(str[3], '1', '8')) {
+        return 0;
+    }
+
     Square from = (Square)((str[0] - 'a') + (str[1] - '1') * 8);
-    Square to = (Square)((str[2] - 'a') + (str[3] - '1') * 8);
-    char promo = (str.length() > 4) ? str[4] : ' ';
+    Square to   = (Square)((str[2] - 'a') + (str[3] - '1') * 8);
+    char promo  = (str.length() > 4) ? str[4] : ' ';
 
     MoveGen::MoveList list;
     MoveGen::generate_all(pos, list);
@@ -26,18 +35,23 @@ uint16_t parse_move(const Position& pos, const std::string& str) {
 
         if (f == from && t == to) {
             int flag = (m >> 12);
-            bool is_promo = (flag & 8);
-            if (is_promo) {
-                int p = (flag & 3);
-                if (promo == 'n' && p == 0) return m;
-                if (promo == 'b' && p == 1) return m;
-                if (promo == 'r' && p == 2) return m;
-                if (promo == 'q' && p == 3) return m;
-            } else {
-                return m;
+
+            // Promotion handling
+            if (flag & 8) {
+                // promo char could be 'n','b','r','q' (UCI is lowercase), allow uppercase too
+                char p = (promo >= 'A' && promo <= 'Z') ? (promo - 'A' + 'a') : promo;
+                if (p == 'n' && ((flag & 3) == 0)) return m;
+                if (p == 'b' && ((flag & 3) == 1)) return m;
+                if (p == 'r' && ((flag & 3) == 2)) return m;
+                if (p == 'q' && ((flag & 3) == 3)) return m;
+                continue; // wrong promotion piece
             }
+
+            // Non-promotion move: accept even if promo char is present
+            return m;
         }
     }
+
     return 0;
 }
 
