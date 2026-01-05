@@ -6,14 +6,22 @@
 
 namespace Bitboards {
 
-    inline int pop_lsb(Bitboard& b) {
-        int idx = std::countr_zero(b);
+    inline Square pop_lsb(Bitboard& b) {
+#ifndef NDEBUG
+        assert(b != 0);
+#endif
+        if (!b) return SQ_NONE;
+        Square idx = (Square)std::countr_zero(b);
         b &= b - 1;
         return idx;
     }
 
-    inline int lsb(Bitboard b) {
-        return std::countr_zero(b);
+    inline Square lsb(Bitboard b) {
+#ifndef NDEBUG
+        assert(b != 0);
+#endif
+        if (!b) return SQ_NONE;
+        return (Square)std::countr_zero(b);
     }
 
     inline int count(Bitboard b) {

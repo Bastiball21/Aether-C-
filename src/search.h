@@ -33,7 +33,7 @@ struct SearchLimits {
 };
 
 // History Tables Size
-const int MAX_PLY = 128;
+const int MAX_PLY = 256;
 
 class Search {
 public:

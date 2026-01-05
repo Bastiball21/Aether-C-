@@ -50,6 +50,13 @@ void Position::set_startpos() {
 }
 
 void Position::put_piece(Piece p, Square s) {
+#ifndef NDEBUG
+    assert(s >= 0 && s < 64);
+#endif
+    if (p == NO_PIECE) {
+        remove_piece(s);
+        return;
+    }
     board[s] = p;
     Bitboards::set_bit(piece_bb[p % 6], s);
     Bitboards::set_bit(color_bb[p / 6], s);
@@ -57,7 +64,12 @@ void Position::put_piece(Piece p, Square s) {
 }
 
 void Position::remove_piece(Square s) {
+#ifndef NDEBUG
+    assert(s >= 0 && s < 64);
+#endif
     Piece p = board[s];
+    if (p == NO_PIECE) return;
+
     board[s] = NO_PIECE;
     Bitboards::clear_bit(piece_bb[p % 6], s);
     Bitboards::clear_bit(color_bb[p / 6], s);
@@ -210,6 +222,9 @@ int Position::non_pawn_material(Color c) const {
 // 1111: Promo Capture Q
 
 void Position::make_move(uint16_t move) {
+#ifndef NDEBUG
+    debug_validate();
+#endif
     Square to = (Square)(move & 0x3F);
     Square from = (Square)((move >> 6) & 0x3F);
     int flag = (move >> 12);
@@ -337,6 +352,9 @@ void Position::unmake_null_move() {
 }
 
 void Position::unmake_move(uint16_t move) {
+#ifndef NDEBUG
+    debug_validate();
+#endif
     Square to = (Square)(move & 0x3F);
     Square from = (Square)((move >> 6) & 0x3F);
     int flag = (move >> 12);
@@ -447,3 +465,62 @@ std::string Position::fen() const {
     // Placeholder logic for FEN generation if needed, skipping for speed
     return "";
 }
+
+#include "position.h"
+#include <cassert>
+
+#ifndef NDEBUG
+void Position::debug_validate() const {
+    // 1. Check Kings
+    Bitboard wk = pieces(KING, WHITE);
+    Bitboard bk = pieces(KING, BLACK);
+    assert(Bitboards::count(wk) == 1 && "White king count must be 1");
+    assert(Bitboards::count(bk) == 1 && "Black king count must be 1");
+
+    // 2. Overlap check
+    Bitboard occ = pieces();
+    Bitboard accum = 0;
+    for (int c = 0; c < COLOR_NB; ++c) {
+        for (int pt = 0; pt < PIECE_TYPE_NB; ++pt) {
+            Bitboard bb = pieces((PieceType)pt, (Color)c);
+            assert(!(accum & bb) && "Piece overlap detected");
+            accum |= bb;
+        }
+    }
+    assert(accum == occ && "Occupancy mismatch");
+
+    // 3. Side check
+    assert((side == WHITE || side == BLACK) && "Invalid side to move");
+
+    // 4. En Passant check
+    if (ep_square != SQ_NONE) {
+        assert(ep_square >= SQ_A1 && ep_square <= SQ_H8 && "Invalid EP square");
+        Rank r = rank_of(ep_square);
+        if (side == WHITE) {
+            assert(r == RANK_6 && "EP square rank invalid for White to move");
+        } else {
+            assert(r == RANK_3 && "EP square rank invalid for Black to move");
+        }
+    }
+
+    // 5. Board vs Bitboard consistency
+    for (int s = 0; s < 64; ++s) {
+        Piece p = board[s];
+        if (p == NO_PIECE) {
+            if (Bitboards::check_bit(occ, (Square)s)) {
+                 std::cerr << "Sync Error: Bitboard set at " << s << " but Board empty" << std::endl;
+                 assert(false);
+            }
+        } else {
+            if (!Bitboards::check_bit(piece_bb[p % 6], (Square)s)) {
+                 std::cerr << "Sync Error: Board has piece " << p << " at " << s << " but Bitboard missing" << std::endl;
+                 assert(false);
+            }
+            if (!Bitboards::check_bit(color_bb[p / 6], (Square)s)) {
+                 std::cerr << "Sync Error: Board has piece " << p << " at " << s << " but Color Bitboard missing" << std::endl;
+                 assert(false);
+            }
+        }
+    }
+}
+#endif

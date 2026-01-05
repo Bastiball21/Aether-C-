@@ -265,6 +265,12 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
     if (stop_flag) return 0;
     node_count++;
 
+#ifndef NDEBUG
+    if ((node_count & 4095) == 0) pos.debug_validate();
+#endif
+
+    if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
+
     bool in_check = pos.in_check();
 
     // Stand-pat only if not in check
@@ -285,6 +291,8 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
     int moves_searched = 0;
 
     while ((move = mp.next())) {
+        if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
+
         pos.make_move(move);
         if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
             pos.unmake_move(move);
@@ -315,7 +323,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     if (stop_flag) return 0;
     node_count++;
 
-    if (ply >= MAX_PLY) return Eval::evaluate(pos);
+    if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
     if (pos.rule50_count() >= 100 || pos.is_repetition()) return 0;
 
     int original_alpha = alpha;
@@ -345,6 +353,16 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     bool tt_hit = TTable.probe(pos.key(), tte);
     if (tt_hit) {
         tt_move = tte.move;
+
+        // Validate TT Move
+        if (tt_move != 0) {
+             Square f = (Square)((tt_move >> 6) & 0x3F);
+             Square t = (Square)(tt_move & 0x3F);
+             if (f < 0 || f >= 64 || t < 0 || t >= 64 || pos.piece_on(f) == NO_PIECE || pos.piece_on(f) / 6 != pos.side_to_move()) {
+                  tt_move = 0;
+             }
+        }
+
         if (tte.depth >= depth) {
             if (tte.bound == 1) return tte.score;
             if (tte.bound == 2 && tte.score <= alpha) return alpha;
@@ -433,6 +451,9 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
     while ((move = mp.next())) {
         if (move == excluded_move) continue;
+
+        // Skip ghost moves
+        if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
 
         bool is_cap = ((move >> 12) & 4) || ((move >> 12) == 5) || ((move >> 12) & 8);
         bool is_quiet = !is_cap;

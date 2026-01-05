@@ -46,6 +46,11 @@ public:
     bool in_check() const;
     bool is_repetition() const;
 
+    // Debug
+#ifndef NDEBUG
+    void debug_validate() const;
+#endif
+
     // FEN
     std::string fen() const;
 

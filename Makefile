@@ -23,4 +23,7 @@ $(OBJ_DIR):
 clean:
 	rm -rf $(OBJ_DIR) $(BIN)
 
+debug:
+	$(CXX) -std=c++20 -O0 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -march=native $(SRCS) -o $(BIN) $(LDFLAGS)
+
 .PHONY: all clean debug

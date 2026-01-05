@@ -10,6 +10,10 @@ namespace MoveGen {
         int count = 0;
 
         void add(uint16_t m) {
+#ifndef NDEBUG
+            assert(count < 256);
+#endif
+            if (count >= 256) return;
             moves[count++] = m;
         }
     };
