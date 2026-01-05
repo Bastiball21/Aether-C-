@@ -102,43 +102,26 @@ struct MovePicker {
              uint16_t m = list.moves[i];
              int flag = (m >> 12);
              if ((flag & 4) || (flag == 5) || (flag & 8)) { // Capture or Promo
-                 Square from_sq = (Square)((m >> 6) & 0x3F);
-                 Square to_sq = (Square)(m & 0x3F);
+                // MVV/LVA Implementation
+                int victim_val = 0;
+                // Estimate victim value from move (or lookup on board if needed)
+                // Simple lookup: P=1, N=3, B=3, R=5, Q=9, K=0
+                Piece victim = pos.piece_on((Square)(m & 0x3F));
+                if (victim != NO_PIECE) {
+                    int v_type = victim % 6;
+                    static const int val[] = {1, 3, 3, 5, 9, 0};
+                    victim_val = val[v_type];
+                }
 
-                 Piece attacker = pos.piece_on(from_sq);
-                 Piece victim = pos.piece_on(to_sq);
+                Piece attacker = pos.piece_on((Square)((m >> 6) & 0x3F));
+                int attacker_val = 1; // Default
+                if (attacker != NO_PIECE) {
+                    int a_type = attacker % 6;
+                    static const int val[] = {1, 3, 3, 5, 9, 0};
+                    attacker_val = val[a_type];
+                }
 
-                 // MVV/LVA formula: (Victim * 10) - Attacker
-                 int victim_score = 0;
-
-                 // Handle En Passant
-                 if (flag == 5) {
-                     victim_score = 1; // Pawn
-                 } else if (victim != NO_PIECE) {
-                     victim_score = (victim % 6) + 1; // 1..6
-                 } else {
-                     // Quiet Promotion (flag >= 8 && flag <= 11) or other?
-                     // If it's a promotion without capture, victim is NO_PIECE.
-                     // But we entered this block for flag 8 (promo).
-                     // We should probably score promotions highly.
-                     // A queen promo is like capturing a queen or better.
-                     if (flag >= 8) {
-                         // Promo piece type: N=0, B=1, R=2, Q=3
-                         int p = (flag & 3);
-                         int promo_val = 0;
-                         if (p == 0) promo_val = 2; // N
-                         else if (p == 1) promo_val = 3; // B
-                         else if (p == 2) promo_val = 4; // R
-                         else if (p == 3) promo_val = 5; // Q
-                         victim_score = promo_val + 1; // Boost
-                     }
-                 }
-
-                 int attacker_score = 0;
-                 if (attacker != NO_PIECE) attacker_score = (attacker % 6) + 1;
-                 else attacker_score = 1; // Should not happen for legal move
-
-                 scores[i] = 10000 + (victim_score * 10) - attacker_score;
+                scores[i] = 10000 + (victim_val * 10) - attacker_val;
              } else {
                  scores[i] = 0;
              }
@@ -176,27 +159,31 @@ struct MovePicker {
                      Piece attacker = pos.piece_on(from_sq);
                      Piece victim = pos.piece_on(to_sq);
 
-                     int victim_score = 0;
+                     int victim_val = 0;
                      if (flag == 5) {
-                         victim_score = 1;
+                         victim_val = 1; // EP
                      } else if (victim != NO_PIECE) {
-                         victim_score = (victim % 6) + 1;
+                         int v_type = victim % 6;
+                         static const int val[] = {1, 3, 3, 5, 9, 0};
+                         victim_val = val[v_type];
                      }
 
-                     // Boost for promotions
+                     // Boost for promotions (approximate to Queen value or specific piece)
                      if ((flag & 8)) {
                          int p = (flag & 3);
-                         int promo_score = 0;
-                         if (p == 0) promo_score = 3; // N
-                         if (p == 1) promo_score = 3; // B
-                         if (p == 2) promo_score = 5; // R
-                         if (p == 3) promo_score = 9; // Q
-                         victim_score += promo_score;
+                         // N=0, B=1, R=2, Q=3
+                         static const int promo_vals[] = {3, 3, 5, 9};
+                         victim_val += promo_vals[p];
                      }
 
-                     int attacker_score = (attacker != NO_PIECE) ? ((attacker % 6) + 1) : 1;
+                     int attacker_val = 1;
+                     if (attacker != NO_PIECE) {
+                        int a_type = attacker % 6;
+                        static const int val[] = {1, 3, 3, 5, 9, 0};
+                        attacker_val = val[a_type];
+                     }
 
-                     score = 100000 + (victim_score * 10) - attacker_score;
+                     score = 100000 + (victim_val * 10) - attacker_val;
 
                 } else {
                     // Killers
@@ -372,7 +359,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             int reduction = 0;
             if (depth >= 3 && moves_searched > 4 && !in_check) {
                 // Formula-based LMR
-                reduction = 1 + (depth * moves_searched) / 32;
+                reduction = 1 + (depth * moves_searched) / 48;
                 if (reduction > depth - 1) reduction = depth - 1;
 
                 // Checks for captures/promotions (flags) needed to avoid reduction

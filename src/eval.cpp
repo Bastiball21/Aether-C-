@@ -9,7 +9,7 @@ namespace Eval {
     const int EG_VALS[6] = { 100, 320, 330, 500, 900, 0 };
     const int PHASE_WEIGHTS[6] = { 0, 1, 1, 2, 4, 0 };
 
-    const int KING_TROPISM_PENALTY[8] = { 5, 4, 2, 1, 0, 0, 0, 0 };
+    const int KING_TROPISM_PENALTY[8] = { 10, 8, 5, 2, 0, 0, 0, 0 };
     const int SHIELD_MISSING_PENALTY = -40;
     const int SHIELD_OPEN_FILE_PENALTY = -50;
 
@@ -25,10 +25,10 @@ namespace Eval {
     const int PASSED_PAWN_SUPPORTED_BONUS_EG = 20;
 
     const std::pair<int, int> MOBILITY_BONUS[4] = {
-        {0, 4}, // Knight
-        {1, 4}, // Bishop
-        {2, 4}, // Rook
-        {4, 4}, // Queen
+        {0, 6}, // Knight
+        {1, 6}, // Bishop
+        {2, 6}, // Rook
+        {4, 6}, // Queen
     };
 
     // PeSTO Tables (Flattened for brevity, but I will include full tables as requested)
