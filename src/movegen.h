@@ -1,0 +1,23 @@
+#ifndef MOVEGEN_H
+#define MOVEGEN_H
+
+#include "position.h"
+
+namespace MoveGen {
+
+    struct MoveList {
+        uint16_t moves[256];
+        int count = 0;
+
+        void add(uint16_t m) {
+            moves[count++] = m;
+        }
+    };
+
+    void generate_all(const Position& pos, MoveList& list);
+    void generate_captures(const Position& pos, MoveList& list);
+    void generate_quiets(const Position& pos, MoveList& list);
+
+} // namespace MoveGen
+
+#endif // MOVEGEN_H
