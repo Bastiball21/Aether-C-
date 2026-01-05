@@ -31,6 +31,27 @@ namespace Eval {
         {4, 6}, // Queen
     };
 
+    // Phase 1: Restricted Piece Penalties (Safe Mob <= 3)
+    // Indexes: 0=Knight, 1=Bishop, 2=Rook, 3=Queen (matching MOBILITY_BONUS logic roughly)
+    // Note: My piece types are KNIGHT=1, BISHOP=2, etc. I'll use a helper or switch.
+    // Arrays for direct lookup: [PieceType]
+    const int RESTRICTED_PENALTY_MG[6] = { 0, 20, 20, 12, 8, 0 }; // P, N, B, R, Q, K
+    const int RESTRICTED_PENALTY_EG[6] = { 0, 10, 10, 6, 4, 0 };
+
+    // Severely Restricted (Safe Mob <= 1)
+    const int RESTRICTED_STRICT_PENALTY_MG[6] = { 0, 40, 40, 24, 16, 0 };
+    const int RESTRICTED_STRICT_PENALTY_EG[6] = { 0, 20, 20, 12, 8, 0 };
+
+    // Phase 2: Pressure Bonus (Attacking a restricted piece)
+    // Bonus applied if restricted (safe mob <= 2) and attacked.
+    const int PRESSURE_BONUS_MG[6] = { 0, 10, 10, 6, 4, 0 };
+    const int PRESSURE_BONUS_EG[6] = { 0, 10, 10, 6, 4, 0 };
+
+    // Phase 3: Inactive Penalty (Total Mob <= 2, Minor Pieces only)
+    const int INACTIVE_PENALTY_MG = 15;
+    const int INACTIVE_PENALTY_EG = 15;
+
+
     // PeSTO Tables (Flattened for brevity, but I will include full tables as requested)
     // Actually, to save space here I will use the provided values but formatting might be compact.
     // I will copy-paste the arrays provided in `eval.rs`.
@@ -67,27 +88,6 @@ namespace Eval {
 
     // Helper Functions
     int get_pst(int piece, int sq, int side, bool is_mg) {
-        // Rust code: sq ^ 56 if WHITE. But Rust tables are likely from WHITE perspective (A1=0).
-        // My C++ tables above are copied from Rust.
-        // Rust index logic: `if side == WHITE { sq ^ 56 } else { sq }`.
-        // Note: Rust `sq` 0=A1? Rust `Bitboard::pop_lsb` usually gives 0=A1.
-        // `sq ^ 56` flips rank.
-        // Usually, PSTs are defined for White relative to A1.
-        // If I am White, and piece is on A1(0), I want index 0?
-        // Rust says: `if side == WHITE { sq ^ 56 }`. This suggests the table is defined from *Black's* perspective or visual layout (Rank 8 at top, index 0).
-        // Let's check `MG_PAWN_TABLE` in Rust.
-        // Indices 0-7: 0,0,0... (Rank 8?). Rank 8 is promotion, so 0 makes sense.
-        // Indices 8-15: 50,50... (Rank 7).
-        // Indices 48-55: 0,0... (Rank 2).
-        // Indices 56-63: 0,0... (Rank 1).
-        // So the table is laid out Rank 8 down to Rank 1. (0=A8, 63=H1).
-        // My Square enum: A1=0, A8=56.
-        // So `sq ^ 56` maps A1(0) -> A8(56).
-        // If the table is Rank 8 -> Rank 1 (indices 0..63), then A8 is index 0.
-        // If I have piece on A1 (index 0 in my enum), I want the last row of table (index 56+).
-        // `0 ^ 56 = 56`. Correct.
-        // So the table is "Visual" (Rank 8 first).
-
         int index = (side == WHITE) ? (sq ^ 56) : sq;
         switch (piece) {
             case PAWN: return is_mg ? MG_PAWN_TABLE[index] : EG_PAWN_TABLE[index];
@@ -120,17 +120,10 @@ namespace Eval {
                 Bitboard att = Bitboards::get_pawn_attacks(s, c);
                 entry.pawn_attacks[c] |= att;
 
-                // Passed Pawn Logic: No enemy pawns in front (same file or adjacent)
-                // Simplify: just use file masks + rank masks?
-                // File A: 0x01010101...
-                // Front mask for White at sq: bits with rank > rank_of(sq)
-
-                // Passed Pawn check
                 File f = file_of(s);
                 Rank r = rank_of(s);
                 bool passed = true;
 
-                // Simple loop for passed check
                 Bitboard forward_mask = 0;
                 if (c == WHITE) {
                      for (int ri = r + 1; ri < 8; ri++) forward_mask |= (0xFFULL << (ri*8));
@@ -156,22 +149,6 @@ namespace Eval {
 
     int get_scale_factor(const Position&, int) {
         return 128;
-    }
-
-    int is_dominant_square(const Position& pos, Square sq, PieceType pt, Color side) {
-        // Bonus if the piece is on a center square (d4, d5, e4, e5).
-        int score = 0;
-        if (sq == SQ_D4 || sq == SQ_D5 || sq == SQ_E4 || sq == SQ_E5) score += 10;
-
-        // Bonus if it is defended by a pawn.
-        Bitboard pawns = pos.pieces(PAWN, side);
-        if (Bitboards::get_pawn_attacks(sq, ~side) & pawns) score += 10;
-
-        // Bonus if it cannot be attacked by enemy pawns.
-        Bitboard enemy_pawns = pos.pieces(PAWN, ~side);
-        if (!(Bitboards::get_pawn_attacks(sq, side) & enemy_pawns)) score += 10;
-
-        return score;
     }
 
     int evaluate_lazy(const Position& pos) {
@@ -203,7 +180,6 @@ namespace Eval {
         int phase_clamped = std::clamp(phase, 0, 24);
         int score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
 
-        // Scale
         score = (score * get_scale_factor(pos, score)) / 128;
 
         return (pos.side_to_move() == BLACK) ? -score : score;
@@ -279,6 +255,10 @@ namespace Eval {
         for(int i=0; i<64; i++) { ring_attack_counts[0][i]=0; ring_attack_counts[1][i]=0; }
 
         int coordination_score[2] = {0, 0};
+
+        // Track restricted pieces for Phase 2
+        Bitboard restricted_pieces[2] = {0, 0};
+
         Bitboard occ = state.pieces();
 
         for (Color us : {WHITE, BLACK}) {
@@ -328,6 +308,8 @@ namespace Eval {
                     if (pt != PAWN && pt != KING) {
                         Bitboard safe_mob = attacks & ~state.pieces(us);
                         int mob_cnt = Bitboards::count(safe_mob);
+
+                        // Existing Mobility Bonus
                         int mob_idx = 0;
                         if (pt == BISHOP) mob_idx = 1;
                         if (pt == ROOK) mob_idx = 2;
@@ -338,6 +320,35 @@ namespace Eval {
                         int s = (mob_cnt - offset) * weight;
                         mg += s * us_sign;
                         eg += s * us_sign;
+
+                        // --- Phase 1: Restricted Piece Penalty ---
+                        // "Safe" mobility: exclude squares attacked by enemy pawns.
+                        // We also exclude our own pieces (already done in safe_mob above).
+                        // Note: safe_mob is currently (attacks & ~us_pieces).
+                        Bitboard pawn_safe_attacks = safe_mob & ~pawn_entry.pawn_attacks[them];
+                        int safe_mob_val = Bitboards::count(pawn_safe_attacks);
+
+                        if (safe_mob_val <= 3) {
+                            if (safe_mob_val <= 1) {
+                                mg -= RESTRICTED_STRICT_PENALTY_MG[pt] * us_sign;
+                                eg -= RESTRICTED_STRICT_PENALTY_EG[pt] * us_sign;
+                            } else {
+                                mg -= RESTRICTED_PENALTY_MG[pt] * us_sign;
+                                eg -= RESTRICTED_PENALTY_EG[pt] * us_sign;
+                            }
+                        }
+
+                        // Mark for Phase 2 (Pressure)
+                        if (safe_mob_val <= 2) {
+                            Bitboards::set_bit(restricted_pieces[us], sq);
+                        }
+
+                        // --- Phase 3: Inactive Penalty ---
+                        // Minor pieces with very low TOTAL mobility.
+                        if ((pt == KNIGHT || pt == BISHOP) && mob_cnt <= 2) {
+                            mg -= INACTIVE_PENALTY_MG * us_sign;
+                            eg -= INACTIVE_PENALTY_EG * us_sign;
+                        }
                     }
 
                     if (pt == ROOK) {
@@ -386,6 +397,31 @@ namespace Eval {
                                 Square s = (Square)Bitboards::pop_lsb(att_on_ring);
                                 ring_attack_counts[them][s]++;
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Phase 2: Pressure on Restricted Pieces ---
+        // Reward attacking enemy restricted pieces.
+        for (Color us : {WHITE, BLACK}) {
+            Color them = ~us;
+            int us_sign = (us == WHITE) ? 1 : -1;
+
+            Bitboard targets = restricted_pieces[them];
+            while (targets) {
+                Square sq = (Square)Bitboards::pop_lsb(targets);
+
+                // If we attack it
+                if (Bitboards::check_bit(attacks_by_side[us], sq)) {
+                    // Safety Gate: Skip if defended by enemy pawn
+                    // (Note: 'them' is the side owning the piece, so check 'them' pawn attacks)
+                    if (!Bitboards::check_bit(pawn_entry.pawn_attacks[them], sq)) {
+                        PieceType pt = (PieceType)(state.piece_on(sq) % 6); // Get type (0-5)
+                        if (pt != NO_PIECE_TYPE && pt != KING && pt != PAWN) {
+                             mg += PRESSURE_BONUS_MG[pt] * us_sign;
+                             eg += PRESSURE_BONUS_EG[pt] * us_sign;
                         }
                     }
                 }
