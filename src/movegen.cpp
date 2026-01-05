@@ -59,8 +59,8 @@ namespace MoveGen {
                      if (dir == NORTH_WEST) attacks = (pawns & ~Bitboards::FileA) << 7;
                      else attacks = (pawns & ~Bitboards::FileH) << 9;
                 } else {
-                     if (dir == SOUTH_WEST) attacks = (pawns & ~Bitboards::FileH) >> 9; // SW -9 from H? No.
-                     else attacks = (pawns & ~Bitboards::FileA) >> 7; // SE
+                     if (dir == SOUTH_WEST) attacks = (pawns & ~Bitboards::FileA) >> 9;
+                     else attacks = (pawns & ~Bitboards::FileH) >> 7;
                 }
 
                 Bitboard common = attacks & enemies;
@@ -197,6 +197,7 @@ namespace MoveGen {
     }
 
     void generate_all(const Position& pos, MoveList& list) {
+        list.count = 0;
         if (pos.side_to_move() == WHITE) {
             generate_pawn_moves<WHITE, true, true>(pos, list);
             generate_piece_moves<WHITE, true, true>(pos, list);
@@ -209,6 +210,7 @@ namespace MoveGen {
     }
 
     void generate_captures(const Position& pos, MoveList& list) {
+         list.count = 0;
          if (pos.side_to_move() == WHITE) {
             generate_pawn_moves<WHITE, false, true>(pos, list);
             generate_piece_moves<WHITE, false, true>(pos, list);
@@ -219,6 +221,7 @@ namespace MoveGen {
     }
 
     void generate_quiets(const Position& pos, MoveList& list) {
+         list.count = 0;
          if (pos.side_to_move() == WHITE) {
             generate_pawn_moves<WHITE, true, false>(pos, list);
             generate_piece_moves<WHITE, true, false>(pos, list);
