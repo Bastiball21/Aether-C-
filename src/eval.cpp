@@ -158,8 +158,20 @@ namespace Eval {
         return 128;
     }
 
-    int is_dominant_square(const Position&, Square, PieceType, Color) {
-        return 0; // Stub
+    int is_dominant_square(const Position& pos, Square sq, PieceType pt, Color side) {
+        // Bonus if the piece is on a center square (d4, d5, e4, e5).
+        int score = 0;
+        if (sq == SQ_D4 || sq == SQ_D5 || sq == SQ_E4 || sq == SQ_E5) score += 10;
+
+        // Bonus if it is defended by a pawn.
+        Bitboard pawns = pos.pieces(PAWN, side);
+        if (Bitboards::get_pawn_attacks(sq, ~side) & pawns) score += 10;
+
+        // Bonus if it cannot be attacked by enemy pawns.
+        Bitboard enemy_pawns = pos.pieces(PAWN, ~side);
+        if (!(Bitboards::get_pawn_attacks(sq, side) & enemy_pawns)) score += 10;
+
+        return score;
     }
 
     int evaluate_lazy(const Position& pos) {
