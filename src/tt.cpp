@@ -68,16 +68,13 @@ void TranspositionTable::store(Key key, uint16_t move, int score, int eval, int 
     if (replace_idx != -1) {
         // Update existing
         TTEntry& e = bucket.entries[replace_idx];
-        // We always update if key matches?
-        // Or only if depth is better?
-        // Usually, we always update generation.
-        // If depth is higher, update everything.
-        // If depth is lower but it is exact, maybe?
-        // Standard: replace if depth >= e.depth or e.gen != current_gen (old) ?
-        // User said: "if any slot matches key -> replace/update it."
+
+        bool replace = (depth >= e.depth || e.gen != current_gen);
+
         e.key = key; // Redundant but safe
         e.gen = current_gen;
-        if (depth >= e.depth || bound == 1) { // Prefer deeper or exact
+
+        if (replace) {
              e.move = move;
              e.score = (int16_t)score;
              e.eval = (int16_t)eval;
@@ -134,6 +131,7 @@ void TranspositionTable::store(Key key, uint16_t move, int score, int eval, int 
 
 int TranspositionTable::hashfull() const {
     int sample = (num_buckets < 1000) ? num_buckets : 1000;
+    if (sample == 0) return 0;
     int count = 0;
     for (int i=0; i<sample; i++) {
         if (buckets[i].entries[0].key != 0) count++;
