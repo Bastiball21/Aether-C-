@@ -8,6 +8,7 @@
 #include "search.h"
 #include "tt.h"
 #include "movegen.h"
+#include "perft.h"
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
@@ -43,6 +44,12 @@ uint16_t parse_move(const Position& pos, const std::string& str) {
 // Global thread
 std::thread search_thread;
 
+// UCI Options
+int OptHash = 64;
+int OptThreads = 1;
+int OptMoveOverhead = 10;
+bool OptChess960 = false;
+
 void join_search() {
     Search::stop();
     if (search_thread.joinable()) {
@@ -54,11 +61,18 @@ int main() {
     Position pos;
     pos.set_startpos();
 
+    // Initialize TT with default
+    TTable.resize(OptHash);
+
     std::string line;
     std::string token;
 
     std::cout << "id name Aether-C" << std::endl;
     std::cout << "id author Jules" << std::endl;
+    std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
+    std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
+    std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
+    std::cout << "option name UCI_Chess960 type check default false" << std::endl;
     std::cout << "uciok" << std::endl;
 
     while (std::getline(std::cin, line)) {
@@ -68,9 +82,35 @@ int main() {
         if (token == "uci") {
             std::cout << "id name Aether-C" << std::endl;
             std::cout << "id author Jules" << std::endl;
+            std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
+            std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
+            std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
+            std::cout << "option name UCI_Chess960 type check default false" << std::endl;
             std::cout << "uciok" << std::endl;
         } else if (token == "isready") {
             std::cout << "readyok" << std::endl;
+        } else if (token == "setoption") {
+            std::string name, value;
+            ss >> token; // name
+            if (token == "name") {
+                ss >> name;
+                while (ss >> token && token != "value") name += " " + token; // Handle spaces in name if any
+                if (token == "value") {
+                    ss >> value;
+                    if (name == "Hash") {
+                        OptHash = std::stoi(value);
+                        join_search();
+                        TTable.resize(OptHash);
+                    } else if (name == "Threads") {
+                        OptThreads = std::stoi(value);
+                        std::cout << "info string Threads > 1 not supported yet" << std::endl;
+                    } else if (name == "MoveOverhead") {
+                        OptMoveOverhead = std::stoi(value);
+                    } else if (name == "UCI_Chess960") {
+                        OptChess960 = (value == "true");
+                    }
+                }
+            }
         } else if (token == "ucinewgame") {
             join_search();
             Search::clear();
@@ -98,6 +138,8 @@ int main() {
         } else if (token == "go") {
             join_search(); // Ensure prev search stopped
             SearchLimits limits;
+            limits.move_overhead_ms = OptMoveOverhead;
+
             while (ss >> token) {
                 if (token == "wtime") ss >> limits.time[WHITE];
                 else if (token == "btime") ss >> limits.time[BLACK];
@@ -106,30 +148,28 @@ int main() {
                 else if (token == "depth") ss >> limits.depth;
                 else if (token == "nodes") ss >> limits.nodes;
                 else if (token == "movetime") ss >> limits.move_time;
+                else if (token == "movestogo") ss >> limits.movestogo;
                 else if (token == "infinite") limits.infinite = true;
             }
 
-            // Launch thread
-            // IMPORTANT: `pos` is passed by ref. Since `main` loops, `pos` stays valid.
-            // On exit, we join().
             search_thread = std::thread(Search::start, std::ref(pos), limits);
         } else if (token == "stop") {
             Search::stop();
-            // Do NOT join here immediately usually in UCI, but since Search::stop sets flag,
-            // the thread will exit soon. We can join on next command or quit.
-            // But to be synchronous with "bestmove", we can wait?
-            // UCI: "stop" -> engine stops -> engine sends "bestmove".
-            // So we just signal stop. The thread will print bestmove and exit.
-            // We join before starting new search.
+            // Thread will print bestmove and exit loop
         } else if (token == "quit") {
             join_search();
             break;
-        } else if (token == "d") {
-            // debug
+        } else if (token == "perft") {
+             int depth;
+             ss >> depth;
+             Perft::go(pos, depth);
+        } else if (token == "divide") {
+             int depth;
+             ss >> depth;
+             Perft::divide(pos, depth);
         }
     }
 
-    // Ensure joined
     join_search();
 
     return 0;
