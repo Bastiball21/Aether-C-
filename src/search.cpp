@@ -334,16 +334,6 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
     bool in_check = pos.in_check();
 
-    // Extensions
-    int extension = 0;
-    if (in_check) extension++;
-    else if (prev_move != 0) {
-        // Recapture logic...
-        Square prev_to = (Square)(prev_move & 0x3F);
-        // We need to know if prev_move was capture.
-        // We check in move loop.
-    }
-
     if (in_check) depth++;
 
     if (depth <= 0) return quiescence(pos, alpha, beta, ply);
@@ -635,6 +625,7 @@ void Search::start(Position& pos, const SearchLimits& limits) {
     if (!limits.infinite) {
         if (limits.move_time > 0) {
             allocated_time_limit = limits.move_time - limits.move_overhead_ms;
+            if (allocated_time_limit < 1) allocated_time_limit = 1;
         } else if (limits.time[pos.side_to_move()] > 0) {
             int remaining = limits.time[pos.side_to_move()];
             int inc = limits.inc[pos.side_to_move()];
@@ -644,8 +635,8 @@ void Search::start(Position& pos, const SearchLimits& limits) {
             if (allocated_time_limit > remaining - limits.move_overhead_ms) {
                 allocated_time_limit = remaining - limits.move_overhead_ms;
             }
+            if (allocated_time_limit < 1) allocated_time_limit = 1;
         }
-        if (allocated_time_limit < 1) allocated_time_limit = 1;
     }
     if (limits.infinite) allocated_time_limit = 2000000000;
 
@@ -693,21 +684,33 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
         Position temp_pos = pos;
         int pv_depth = 0;
         std::vector<Key> pv_keys;
-        pv_keys.push_back(temp_pos.key());
-
-        while (pv_depth < depth) {
+        pv_keys.push_back(temp_pos.key());        while (pv_depth < depth) {
              TTEntry tte;
-             if (TTable.probe(temp_pos.key(), tte) && tte.move != 0) {
-                 pv_str += move_to_uci(tte.move) + " ";
-                 temp_pos.make_move(tte.move);
-                 pv_depth++;
-                 bool cycled = false;
-                 for (Key k : pv_keys) if (k == temp_pos.key()) cycled = true;
-                 if (cycled) break;
-                 pv_keys.push_back(temp_pos.key());
-             } else {
+             if (!TTable.probe(temp_pos.key(), tte) || tte.move == 0) break;
+
+             // Validate TT move is legal here (hash collisions can corrupt PV)
+             MoveGen::MoveList ml;
+             MoveGen::generate_all(temp_pos, ml);
+             bool found = false;
+             for (int i = 0; i < ml.count; ++i) {
+                 if (ml.moves[i] == tte.move) { found = true; break; }
+             }
+             if (!found) break;
+
+             temp_pos.make_move(tte.move);
+             Color us = (Color)(temp_pos.side_to_move() ^ 1);
+             if (temp_pos.is_attacked((Square)Bitboards::lsb(temp_pos.pieces(KING, us)), (Color)(us ^ 1))) {
+                 temp_pos.unmake_move(tte.move);
                  break;
              }
+
+             pv_str += move_to_uci(tte.move) + " ";
+             pv_depth++;
+
+             bool cycled = false;
+             for (Key k : pv_keys) if (k == temp_pos.key()) { cycled = true; break; }
+             if (cycled) break;
+             pv_keys.push_back(temp_pos.key());
         }
 
         std::cout << "info depth " << depth

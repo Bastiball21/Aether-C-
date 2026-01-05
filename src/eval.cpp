@@ -264,11 +264,8 @@ namespace Eval {
         for (Color us : {WHITE, BLACK}) {
             Color them = ~us;
             int us_sign = (us == WHITE) ? 1 : -1;
-
-            Bitboard my_rooks = state.pieces(ROOK, us);
-            Bitboard my_bishops = state.pieces(BISHOP, us);
-            Bitboard my_queens = state.pieces(QUEEN, us);
-            Bitboard my_pawns = state.pieces(PAWN, us);
+Bitboard my_bishops = state.pieces(BISHOP, us);
+Bitboard my_pawns = state.pieces(PAWN, us);
             Bitboard enemy_pawns = state.pieces(PAWN, them);
 
             // Bishop Pair

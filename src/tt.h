@@ -11,7 +11,7 @@ struct TTEntry {
     int16_t eval;     // 2 bytes
     uint16_t move;    // 2 bytes
     uint8_t depth;    // 1 byte
-    uint8_t bound;    // 1 byte (EXACT=1, LOWER=2, UPPER=3)
+    uint8_t bound;    // 1 byte (EXACT=1, UPPER=2, LOWER=3)
     uint8_t gen;      // 1 byte
     uint8_t pad;      // 1 byte (for alignment)
     // Total: 18 bytes? No.
