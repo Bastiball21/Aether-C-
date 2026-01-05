@@ -23,4 +23,4 @@ $(OBJ_DIR):
 clean:
 	rm -rf $(OBJ_DIR) $(BIN)
 
-.PHONY: all clean
+.PHONY: all clean debug

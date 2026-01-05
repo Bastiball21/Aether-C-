@@ -133,10 +133,17 @@ void TranspositionTable::store(Key key, uint16_t move, int score, int eval, int 
 }
 
 int TranspositionTable::hashfull() const {
+    int sample = (num_buckets < 1000) ? num_buckets : 1000;
     int count = 0;
-    for (int i=0; i<1000; i++) { // Sample first 1000 buckets
+    for (int i=0; i<sample; i++) {
         if (buckets[i].entries[0].key != 0) count++;
         if (buckets[i].entries[1].key != 0) count++;
     }
-    return count / 2; // permill approx
+    // count is number of entries (max sample * 2)
+    // We want permill (0-1000)
+    // filled_fraction = count / (sample * 2)
+    // permill = filled_fraction * 1000
+    // = count * 1000 / (sample * 2)
+    // = count * 500 / sample
+    return (count * 500) / sample;
 }

@@ -49,6 +49,10 @@ int OptHash = 64;
 int OptThreads = 1;
 int OptMoveOverhead = 10;
 bool OptChess960 = false;
+bool OptNullMove = true;
+bool OptProbCut = true;
+bool OptSingularExt = true;
+bool OptUseHistory = true;
 
 void join_search() {
     Search::stop();
@@ -67,25 +71,21 @@ int main() {
     std::string line;
     std::string token;
 
-    std::cout << "id name Aether-C" << std::endl;
-    std::cout << "id author Jules" << std::endl;
-    std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
-    std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
-    std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
-    std::cout << "option name UCI_Chess960 type check default false" << std::endl;
-    std::cout << "uciok" << std::endl;
-
     while (std::getline(std::cin, line)) {
         std::stringstream ss(line);
         ss >> token;
 
         if (token == "uci") {
             std::cout << "id name Aether-C" << std::endl;
-            std::cout << "id author Jules" << std::endl;
+            std::cout << "id author Bastiball21" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
             std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
             std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
             std::cout << "option name UCI_Chess960 type check default false" << std::endl;
+            std::cout << "option name NullMove type check default true" << std::endl;
+            std::cout << "option name ProbCut type check default true" << std::endl;
+            std::cout << "option name SingularExt type check default true" << std::endl;
+            std::cout << "option name UseHistory type check default true" << std::endl;
             std::cout << "uciok" << std::endl;
         } else if (token == "isready") {
             std::cout << "readyok" << std::endl;
@@ -108,6 +108,14 @@ int main() {
                         OptMoveOverhead = std::stoi(value);
                     } else if (name == "UCI_Chess960") {
                         OptChess960 = (value == "true");
+                    } else if (name == "NullMove") {
+                        OptNullMove = (value == "true");
+                    } else if (name == "ProbCut") {
+                        OptProbCut = (value == "true");
+                    } else if (name == "SingularExt") {
+                        OptSingularExt = (value == "true");
+                    } else if (name == "UseHistory") {
+                        OptUseHistory = (value == "true");
                     }
                 }
             }
@@ -139,6 +147,10 @@ int main() {
             join_search(); // Ensure prev search stopped
             SearchLimits limits;
             limits.move_overhead_ms = OptMoveOverhead;
+            limits.use_nmp = OptNullMove;
+            limits.use_probcut = OptProbCut;
+            limits.use_singular = OptSingularExt;
+            limits.use_history = OptUseHistory;
 
             while (ss >> token) {
                 if (token == "wtime") ss >> limits.time[WHITE];
@@ -167,6 +179,39 @@ int main() {
              int depth;
              ss >> depth;
              Perft::divide(pos, depth);
+        } else if (token == "bench") {
+             join_search();
+             // Simple bench
+             // Startpos + 3 tactical positions
+             std::vector<std::string> fens = {
+                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                 "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", // Kiwipete
+                 "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+                 "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"
+             };
+
+             long long total_nodes = 0;
+             auto bench_start = std::chrono::steady_clock::now();
+
+             for (const auto& f : fens) {
+                 pos.set(f);
+                 SearchLimits limits;
+                 limits.depth = 10;
+                 // Use globals
+                 limits.use_nmp = OptNullMove;
+                 limits.use_probcut = OptProbCut;
+                 limits.use_singular = OptSingularExt;
+                 limits.use_history = OptUseHistory;
+
+                 // Run in this thread
+                 Search::start(pos, limits); // This loops over depths.
+                 total_nodes += Search::get_node_count();
+             }
+
+             auto bench_end = std::chrono::steady_clock::now();
+             long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(bench_end - bench_start).count();
+
+             std::cout << "Bench: " << total_nodes << " nodes " << ms << " ms " << (ms > 0 ? total_nodes * 1000 / ms : 0) << " nps" << std::endl;
         }
     }
 

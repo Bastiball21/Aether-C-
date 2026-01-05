@@ -157,6 +157,15 @@ void Position::set(const std::string& fen) {
     halfmove_clock = (fullmove - 1) * 2 + (side == BLACK);
 }
 
+int Position::non_pawn_material(Color c) const {
+    int mat = 0;
+    mat += Bitboards::count(pieces(KNIGHT, c)) * 320;
+    mat += Bitboards::count(pieces(BISHOP, c)) * 330;
+    mat += Bitboards::count(pieces(ROOK, c)) * 500;
+    mat += Bitboards::count(pieces(QUEEN, c)) * 900;
+    return mat;
+}
+
 // Basic move encoding:
 // 0-5: from, 6-11: to, 12-13: type (0=norm, 1=promo, 2=enpassant, 3=castling), 14-15: promo type (0=N,1=B,2=R,3=Q)
 // Actually standard is:

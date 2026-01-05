@@ -30,6 +30,9 @@ public:
     int castling_rights_mask() const { return castling; }
     int rule50_count() const { return rule50; }
 
+    // Material Helper
+    int non_pawn_material(Color c) const;
+
     // Modification
     void make_move(uint16_t move); // Move is uint16_t encoded
     void unmake_move(uint16_t move);
