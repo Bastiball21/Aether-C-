@@ -41,6 +41,7 @@ public:
     // Helpers
     bool is_attacked(Square sq, Color by_side) const;
     bool in_check() const;
+    bool is_repetition() const;
 
     // FEN
     std::string fen() const;

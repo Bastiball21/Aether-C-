@@ -21,6 +21,7 @@ public:
 
     bool probe(Key key, TTEntry& entry) const;
     void store(Key key, uint16_t move, int score, int eval, int depth, int type);
+    void prefetch(Key key) const;
 
     int hashfull() const;
 

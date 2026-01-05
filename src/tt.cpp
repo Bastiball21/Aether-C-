@@ -28,6 +28,11 @@ bool TranspositionTable::probe(Key key, TTEntry& entry) const {
     return false;
 }
 
+void TranspositionTable::prefetch(Key key) const {
+    size_t idx = key % num_entries;
+    __builtin_prefetch(&table[idx]);
+}
+
 void TranspositionTable::store(Key key, uint16_t move, int score, int eval, int depth, int type) {
     size_t idx = key % num_entries;
     TTEntry& e = table[idx];

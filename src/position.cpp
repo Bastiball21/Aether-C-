@@ -397,6 +397,43 @@ bool Position::in_check() const {
     return is_attacked(ksq, ~side);
 }
 
+bool Position::is_repetition() const {
+    // Check current hash against history
+    // Rule: if same position appears 3 times, it's a draw.
+    // However, in search we often prune on *first* repetition (i.e. count >= 1 previous occurence)
+    // because returning draw score (0) avoids cycles.
+    // Standard practice: check backwards.
+    // Also check rule50 for efficiency (irreversible moves reset repetition list effectively)
+    // But we have full history.
+
+    // We iterate backwards.
+    int count = 0;
+    // We start from history.size() - 2 because back() is current state pushed?
+    // Wait, history only contains *previous* states. `make_move` pushes current state (key, rule50, etc) *before* update?
+    // No. `make_move`:
+    // si.key = st_key; ... history.push_back(si);
+    // So history contains states *before* the move.
+    // The current position state is in `st_key`.
+
+    // So we check against history.
+    // We only need to check up to rule50 plies back?
+    // Irreversible moves (pawn move, capture) reset rule50 to 0.
+    // Any position before an irreversible move cannot be repeated (because pawn structure change or piece count change).
+    // So we only check `rule50` elements.
+
+    int end = (int)history.size() - 1;
+    int start = end - rule50;
+    if (start < 0) start = 0;
+
+    for (int i = end; i >= start; i--) {
+        if (history[i].key == st_key) {
+            return true; // Found 1 repetition -> 2nd occurrence.
+            // Usually returns draw score immediately to avoid loops.
+        }
+    }
+    return false;
+}
+
 std::string Position::fen() const {
     // Placeholder logic for FEN generation if needed, skipping for speed
     return "";
