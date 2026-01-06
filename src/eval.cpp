@@ -51,6 +51,14 @@ namespace Eval {
     const int INACTIVE_PENALTY_MG = 15;
     const int INACTIVE_PENALTY_EG = 15;
 
+    // Pawn Structure
+    const int PAWN_ISOLATED_MG = 10;
+    const int PAWN_ISOLATED_EG = 10;
+    const int PAWN_DOUBLED_MG = 15;
+    const int PAWN_DOUBLED_EG = 15;
+
+    // Pawn Hash
+    PawnEntry PawnHash[16384];
 
     // PeSTO Tables (Flattened for brevity, but I will include full tables as requested)
     // Actually, to save space here I will use the provided values but formatting might be compact.
@@ -100,9 +108,17 @@ namespace Eval {
         }
     }
 
-    // Pawn Eval (Simplified)
+    // Pawn Eval
     PawnEntry evaluate_pawns(const Position& pos) {
+        Key key = pos.pawn_key();
+        int idx = key & 16383;
+
+        if (PawnHash[idx].key == key) {
+            return PawnHash[idx];
+        }
+
         PawnEntry entry;
+        entry.key = key;
         entry.score_mg = 0;
         entry.score_eg = 0;
         entry.passed_pawns[WHITE] = 0;
@@ -112,7 +128,9 @@ namespace Eval {
 
         // Calc Attacks and Passed Pawns
         for (Color c : {WHITE, BLACK}) {
+            int us_sign = (c == WHITE) ? 1 : -1;
             Bitboard pawns = pos.pieces(PAWN, c);
+            Bitboard original_pawns = pawns;
             Bitboard them_pawns = pos.pieces(PAWN, ~c);
 
             while (pawns) {
@@ -122,19 +140,37 @@ namespace Eval {
 
                 File f = file_of(s);
                 Rank r = rank_of(s);
-                bool passed = true;
 
+                // Isolated
+                Bitboard file_mask = (Bitboards::FileA << f);
+                Bitboard adj_mask = 0;
+                if (f > FILE_A) adj_mask |= (Bitboards::FileA << (f - 1));
+                if (f < FILE_H) adj_mask |= (Bitboards::FileA << (f + 1));
+
+                if ((original_pawns & adj_mask) == 0) {
+                    entry.score_mg -= PAWN_ISOLATED_MG * us_sign;
+                    entry.score_eg -= PAWN_ISOLATED_EG * us_sign;
+                }
+
+                // Doubled (if another pawn on same file)
+                if (Bitboards::more_than_one(original_pawns & file_mask)) {
+                    // Penalty applied to each pawn in doubled set?
+                    // Common is to penalize.
+                    // Let's penalize each pawn that is doubled.
+                    // This means if 2 pawns, both get penalty = 2x penalty.
+                    // This is aggressive but ok.
+                    entry.score_mg -= PAWN_DOUBLED_MG * us_sign;
+                    entry.score_eg -= PAWN_DOUBLED_EG * us_sign;
+                }
+
+                // Passed
+                bool passed = true;
                 Bitboard forward_mask = 0;
                 if (c == WHITE) {
                      for (int ri = r + 1; ri < 8; ri++) forward_mask |= (0xFFULL << (ri*8));
                 } else {
                      for (int ri = r - 1; ri >= 0; ri--) forward_mask |= (0xFFULL << (ri*8));
                 }
-
-                Bitboard file_mask = (Bitboards::FileA << f);
-                Bitboard adj_mask = 0;
-                if (f > FILE_A) adj_mask |= (Bitboards::FileA << (f - 1));
-                if (f < FILE_H) adj_mask |= (Bitboards::FileA << (f + 1));
 
                 Bitboard span = (file_mask | adj_mask) & forward_mask;
 
@@ -144,6 +180,7 @@ namespace Eval {
             }
         }
 
+        PawnHash[idx] = entry;
         return entry;
     }
 

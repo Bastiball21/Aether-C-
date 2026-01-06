@@ -13,7 +13,7 @@
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
     // Expect UCI move like "e2e4" or "e7e8q"
-    if (str.size() < 4) return 0;
+    if (str.length() < 4 || str.length() > 5) return 0;
 
     auto in_range = [](char c, char lo, char hi) { return c >= lo && c <= hi; };
     if (!in_range(str[0], 'a', 'h') || !in_range(str[2], 'a', 'h') ||
@@ -24,6 +24,12 @@ uint16_t parse_move(const Position& pos, const std::string& str) {
     Square from = (Square)((str[0] - 'a') + (str[1] - '1') * 8);
     Square to   = (Square)((str[2] - 'a') + (str[3] - '1') * 8);
     char promo  = (str.length() > 4) ? str[4] : ' ';
+
+    // Validate promotion char if present
+    if (str.length() > 4) {
+        char p = (promo >= 'A' && promo <= 'Z') ? (promo - 'A' + 'a') : promo;
+        if (p != 'n' && p != 'b' && p != 'r' && p != 'q') return 0;
+    }
 
     MoveGen::MoveList list;
     MoveGen::generate_all(pos, list);

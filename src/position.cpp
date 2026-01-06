@@ -62,6 +62,7 @@ void Position::put_piece(Piece p, Square s) {
     Bitboards::set_bit(piece_bb[p % 6], s);
     Bitboards::set_bit(color_bb[p / 6], s);
     st_key ^= Zobrist::psq[p][s];
+    if ((p % 6) == PAWN) p_key ^= Zobrist::psq[p][s];
 }
 
 void Position::remove_piece(Square s) {
@@ -75,6 +76,7 @@ void Position::remove_piece(Square s) {
     Bitboards::clear_bit(piece_bb[p % 6], s);
     Bitboards::clear_bit(color_bb[p / 6], s);
     st_key ^= Zobrist::psq[p][s];
+    if ((p % 6) == PAWN) p_key ^= Zobrist::psq[p][s];
 }
 
 void Position::move_piece(Square from, Square to) {
@@ -94,6 +96,7 @@ void Position::set(const std::string& fen) {
     rule50 = 0;
     halfmove_clock = 0;
     st_key = 0;
+    p_key = 0;
     history.clear();
 
     std::stringstream ss(fen);
@@ -232,6 +235,7 @@ void Position::make_move(uint16_t move) {
 
     StateInfo si;
     si.key = st_key;
+    si.pawn_key = p_key;
     si.castling = castling;
     si.ep_square = ep_square;
     si.rule50 = rule50;
@@ -319,6 +323,7 @@ void Position::make_move(uint16_t move) {
 void Position::make_null_move() {
     StateInfo si;
     si.key = st_key;
+    si.pawn_key = p_key;
     si.castling = castling;
     si.ep_square = ep_square;
     si.rule50 = rule50;
@@ -350,6 +355,7 @@ void Position::unmake_null_move() {
     ep_square = si.ep_square;
     rule50 = si.rule50;
     st_key = si.key;
+    p_key = si.pawn_key;
 }
 
 void Position::unmake_move(uint16_t move) {
@@ -401,6 +407,7 @@ void Position::unmake_move(uint16_t move) {
     ep_square = si.ep_square;
     rule50 = si.rule50;
     st_key = si.key;
+    p_key = si.pawn_key;
 }
 
 bool Position::is_attacked(Square sq, Color by_side) const {

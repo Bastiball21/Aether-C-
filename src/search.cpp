@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <cstring>
+#include <cmath>
 
 using namespace std::chrono;
 
@@ -23,6 +24,9 @@ const int INFINITY_SCORE = 32000;
 const int MATE_SCORE = 31000;
 // const int MAX_PLY = 128; // Defined in search.h
 
+// LMR Table
+int LMRTable[64][64];
+
 // History Tables
 int History[2][6][64];
 int16_t ContHistory[2][6][64][6][64];
@@ -31,6 +35,17 @@ int KillerMoves[MAX_PLY][2];
 
 // Constants for History
 const int MAX_HISTORY = 16384;
+
+void init_lmr() {
+    for (int d = 0; d < 64; d++) {
+        for (int m = 0; m < 64; m++) {
+            if (d < 3 || m < 2) LMRTable[d][m] = 0;
+            else {
+                LMRTable[d][m] = (int)(1.0 + log(d) * log(m) / 2.0);
+            }
+        }
+    }
+}
 
 // Options
 bool Search::UseNMP = true;
@@ -76,6 +91,7 @@ void Search::clear() {
     std::memset(ContHistory, 0, sizeof(ContHistory));
     std::memset(CounterMove, 0, sizeof(CounterMove));
     std::memset(KillerMoves, 0, sizeof(KillerMoves));
+    init_lmr();
 }
 
 // History Update Helpers
@@ -113,51 +129,70 @@ void check_limits() {
 }
 
 // Move Picker
-struct MovePicker {
+class MovePicker {
     const Position& pos;
     MoveGen::MoveList list;
     int current_idx = 0;
-    int scores[512];
+    int scores[256];
+    uint16_t tt_move;
     uint16_t prev_move;
+    int ply;
+    int stage;
+    bool captures_only;
 
-    MovePicker(const Position& p, uint16_t tt_move, int ply, uint16_t prev_m) : pos(p), prev_move(prev_m) {
-        MoveGen::generate_all(pos, list);
-        score_moves(tt_move, ply);
+    enum Stage {
+        TT_MOVE_STAGE,
+        GEN_CAPTURES,
+        CAPTURES_STAGE,
+        GEN_QUIETS,
+        QUIETS_STAGE,
+        FINISHED
+    };
+
+public:
+    MovePicker(const Position& p, uint16_t tm, int pl, uint16_t pm)
+        : pos(p), tt_move(tm), prev_move(pm), ply(pl), stage(TT_MOVE_STAGE), captures_only(false) {}
+
+    MovePicker(const Position& p, bool caps_only)
+        : pos(p), tt_move(0), prev_move(0), ply(0), stage(GEN_CAPTURES), captures_only(caps_only) {
+        if (!captures_only) stage = TT_MOVE_STAGE; // Should usually be captures only for quiescence, but fallback
     }
 
-    MovePicker(const Position& p, bool captures_only) : pos(p), prev_move(0) {
-        if (captures_only) MoveGen::generate_captures(pos, list);
-        else MoveGen::generate_all(pos, list);
+    void score_captures() {
+        for (int i = 0; i < list.count; i++) {
+            uint16_t m = list.moves[i];
 
-        for (int i=0; i<list.count; i++) {
-             uint16_t m = list.moves[i];
-             int flag = (m >> 12);
-             if ((flag & 4) || (flag == 5) || (flag & 8)) { // Capture or Promo
-                Piece victim = pos.piece_on((Square)(m & 0x3F));
-                int victim_val = 0;
-                if (victim != NO_PIECE) {
-                    int v_type = victim % 6;
-                    static const int val[] = {1, 3, 3, 5, 9, 0};
-                    victim_val = val[v_type];
-                }
-                Piece attacker = pos.piece_on((Square)((m >> 6) & 0x3F));
-                int attacker_val = 1;
-                if (attacker != NO_PIECE) {
-                    int a_type = attacker % 6;
-                    static const int val[] = {1, 3, 3, 5, 9, 0};
-                    attacker_val = val[a_type];
-                }
+            int flag = (m >> 12);
+            Piece victim = pos.piece_on((Square)(m & 0x3F));
+            int victim_val = 0;
+            if (flag == 5) victim_val = 1; // EP
+            else if (victim != NO_PIECE) {
+                int v_type = victim % 6;
+                static const int val[] = {1, 3, 3, 5, 9, 0};
+                victim_val = val[v_type];
+            }
 
-                int see_score = see(pos, m);
-                // MVV/LVA + SEE
-                scores[i] = 10000 + (victim_val * 10) - attacker_val + (see_score > 0 ? see_score / 10 : 0);
-             } else {
-                 scores[i] = 0;
-             }
+            // Promotion
+            if (flag & 8) {
+                int p = (flag & 3);
+                static const int promo_vals[] = {3, 3, 5, 9};
+                victim_val += promo_vals[p];
+            }
+
+            Piece attacker = pos.piece_on((Square)((m >> 6) & 0x3F));
+            int attacker_val = 1;
+            if (attacker != NO_PIECE) {
+                int a_type = attacker % 6;
+                static const int val[] = {1, 3, 3, 5, 9, 0};
+                attacker_val = val[a_type];
+            }
+
+            int see_score = see(pos, m);
+            scores[i] = 100000 + (victim_val * 10) - attacker_val + (see_score > 0 ? see_score / 10 : 0);
         }
     }
 
-    void score_moves(uint16_t tt_move, int ply) {
+    void score_quiets() {
         Square prev_to = SQ_NONE;
         Piece prev_pc = NO_PIECE;
         if (prev_move != 0) {
@@ -165,77 +200,30 @@ struct MovePicker {
              prev_pc = pos.piece_on(prev_to);
         }
 
-        for (int i=0; i<list.count; i++) {
+        for (int i = 0; i < list.count; i++) {
             uint16_t m = list.moves[i];
             int score = 0;
 
-            if (m == tt_move) {
-                score = 2000000;
-            } else {
-                int flag = (m >> 12);
-                bool is_capture = (flag & 4) || (flag == 5);
-                bool is_promo = (flag & 8);
+            if (ply < MAX_PLY && KillerMoves[ply][0] == m) score = 90000;
+            else if (ply < MAX_PLY && KillerMoves[ply][1] == m) score = 80000;
+            else {
+                Square f = (Square)((m >> 6) & 0x3F);
+                Square t = (Square)(m & 0x3F);
+                Piece pc = pos.piece_on(f);
+                int pt = pc % 6;
 
-                if (is_capture || is_promo) {
-                     Square from_sq = (Square)((m >> 6) & 0x3F);
-                     Square to_sq = (Square)(m & 0x3F);
-                     Piece attacker = pos.piece_on(from_sq);
-                     Piece victim = pos.piece_on(to_sq);
-
-                     int victim_val = 0;
-                     if (flag == 5) {
-                         victim_val = 1;
-                     } else if (victim != NO_PIECE) {
-                         int v_type = victim % 6;
-                         static const int val[] = {1, 3, 3, 5, 9, 0};
-                         victim_val = val[v_type];
-                     }
-
-                     if ((flag & 8)) {
-                         int p = (flag & 3);
-                         static const int promo_vals[] = {3, 3, 5, 9};
-                         victim_val += promo_vals[p];
-                     }
-
-                     int attacker_val = 1;
-                     if (attacker != NO_PIECE) {
-                        int a_type = attacker % 6;
-                        static const int val[] = {1, 3, 3, 5, 9, 0};
-                        attacker_val = val[a_type];
-                     }
-
-                     int see_score = see(pos, m);
-                     score = 100000 + (victim_val * 10) - attacker_val + (see_score > 0 ? see_score / 10 : 0);
-
-                } else {
-                    if (ply < MAX_PLY && KillerMoves[ply][0] == m) score = 90000;
-                    else if (ply < MAX_PLY && KillerMoves[ply][1] == m) score = 80000;
-                    else {
-                        Square f = (Square)((m >> 6) & 0x3F);
-                        Square t = (Square)(m & 0x3F);
-
-                        Piece pc = pos.piece_on(f);
-                        int pt = pc % 6;
-
-                        if (Search::UseHistory) {
-                            // History
-                            score = History[pos.side_to_move()][pt][t];
-
-                            // Continuation
-                            if (prev_pc != NO_PIECE && prev_to != SQ_NONE) {
-                                int pt_prev = prev_pc % 6;
-                                score += ContHistory[pos.side_to_move()][pt_prev][prev_to][pt][t];
-                            }
-
-                            // Counter Move
-                            if (prev_move != 0) {
-                                Square pf = (Square)((prev_move >> 6) & 0x3F);
-                                Square pt_sq = (Square)(prev_move & 0x3F);
-                                int key = (pf << 6) | pt_sq;
-                                if (CounterMove[pos.side_to_move()][key] == m) {
-                                    score += 1500;
-                                }
-                            }
+                if (Search::UseHistory) {
+                    score = History[pos.side_to_move()][pt][t];
+                    if (prev_pc != NO_PIECE && prev_to != SQ_NONE) {
+                        int pt_prev = prev_pc % 6;
+                        score += ContHistory[pos.side_to_move()][pt_prev][prev_to][pt][t];
+                    }
+                    if (prev_move != 0) {
+                        Square pf = (Square)((prev_move >> 6) & 0x3F);
+                        Square pt_sq = (Square)(prev_move & 0x3F);
+                        int key = (pf << 6) | pt_sq;
+                        if (CounterMove[pos.side_to_move()][key] == m) {
+                            score += 1500;
                         }
                     }
                 }
@@ -245,18 +233,88 @@ struct MovePicker {
     }
 
     uint16_t next() {
-        if (current_idx >= list.count) return 0;
-        int best_idx = current_idx;
-        int best_score = scores[current_idx];
-        for (int i = current_idx + 1; i < list.count; i++) {
-            if (scores[i] > best_score) {
-                best_score = scores[i];
-                best_idx = i;
+        while (true) {
+            if (stage == TT_MOVE_STAGE) {
+                stage = GEN_CAPTURES;
+                if (tt_move != 0) return tt_move; // Caller must check legality? Usually yes.
+                // But in negamax we checked it partially.
+                // Actually `MovePicker` returns pseudo-legal moves.
+                // We should rely on `generate_all` validation or `pos.make_move` + check validity.
+                // However, returning TT move without generating it first is risky if it's not legal.
+                // But we validated TT move in negamax before creating MovePicker?
+                // Wait, in `negamax`:
+                // `bool tt_hit = TTable.probe(..., tte); if (tt_hit) tt_move = tte.move;`
+                // `// Validate TT Move` block is there.
+                // So tt_move is at least pseudo-legal (pieces exist).
+                // Strict legality check happens after make_move.
+                continue;
             }
+
+            if (stage == GEN_CAPTURES) {
+                MoveGen::generate_captures(pos, list);
+                score_captures();
+                current_idx = 0;
+                stage = CAPTURES_STAGE;
+            }
+
+            if (stage == CAPTURES_STAGE) {
+                if (current_idx >= list.count) {
+                    if (captures_only) {
+                        stage = FINISHED;
+                        return 0;
+                    }
+                    stage = GEN_QUIETS;
+                    continue;
+                }
+
+                // Pick best
+                int best_idx = current_idx;
+                int best_score = scores[current_idx];
+                for (int i = current_idx + 1; i < list.count; i++) {
+                    if (scores[i] > best_score) {
+                        best_score = scores[i];
+                        best_idx = i;
+                    }
+                }
+                std::swap(list.moves[current_idx], list.moves[best_idx]);
+                std::swap(scores[current_idx], scores[best_idx]);
+
+                uint16_t m = list.moves[current_idx++];
+                if (m == tt_move) continue;
+                return m;
+            }
+
+            if (stage == GEN_QUIETS) {
+                MoveGen::generate_quiets(pos, list);
+                score_quiets();
+                current_idx = 0;
+                stage = QUIETS_STAGE;
+            }
+
+            if (stage == QUIETS_STAGE) {
+                if (current_idx >= list.count) {
+                    stage = FINISHED;
+                    return 0;
+                }
+
+                int best_idx = current_idx;
+                int best_score = scores[current_idx];
+                for (int i = current_idx + 1; i < list.count; i++) {
+                    if (scores[i] > best_score) {
+                        best_score = scores[i];
+                        best_idx = i;
+                    }
+                }
+                std::swap(list.moves[current_idx], list.moves[best_idx]);
+                std::swap(scores[current_idx], scores[best_idx]);
+
+                uint16_t m = list.moves[current_idx++];
+                if (m == tt_move) continue;
+                return m;
+            }
+
+            if (stage == FINISHED) return 0;
         }
-        std::swap(list.moves[current_idx], list.moves[best_idx]);
-        std::swap(scores[current_idx], scores[best_idx]);
-        return list.moves[current_idx++];
     }
 };
 
@@ -291,6 +349,17 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
     int moves_searched = 0;
 
     while ((move = mp.next())) {
+        // SEE pruning for captures in QSearch
+        // Skip losing captures if not in check
+        if (!in_check) {
+            int flag = (move >> 12);
+            bool is_cap = ((flag & 4) || (flag == 5));
+            bool is_promo = (flag & 8);
+            if (is_cap && !is_promo) {
+                if (see(pos, move) < 0) continue;
+            }
+        }
+
         if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
 
         pos.make_move(move);
@@ -461,17 +530,24 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              }
         }
 
+        // Shallow Futility (Razoring-like)
+        if (!in_check && is_quiet && depth < 6 && static_eval + 150 * depth <= alpha) {
+             // If static eval is way below alpha, prune quiet moves
+             continue;
+        }
+
         // Futility
         if (depth == 1 && !in_check && is_quiet) {
-             int fut_margin = 120;
+             int fut_margin = 150;
              if (static_eval + fut_margin <= alpha) continue;
         }
 
         // SEE pruning
-        if (is_cap && !in_check && depth <= 3) {
+        if (is_cap && !in_check && depth <= 5) {
             bool is_promo = (move >> 12) & 8;
             if (!is_promo) {
-                if (see(pos, move) < 0) continue;
+                int margin = (depth - 1) * -50;
+                if (see(pos, move) < margin) continue;
             }
         }
 
@@ -517,11 +593,19 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             score = -negamax(pos, depth - 1 + ext, -beta, -alpha, ply + 1, true, move, 0);
         } else {
             int reduction = 0;
-            if (depth >= 3 && moves_searched > 4 && !in_check) {
-                reduction = 1 + (depth * moves_searched) / 48;
-                if (reduction > depth - 1) reduction = depth - 1;
+            if (depth >= 3 && moves_searched > 1 && !in_check) {
+                int d = std::min(depth, 63);
+                int m = std::min(moves_searched, 63);
+                reduction = LMRTable[d][m];
+
+                // Adjust LMR
+                if (is_quiet) reduction += 1; // More reduction for quiets
                 if (ext > 0) reduction = 0;
-                if ((flag & 4) || (flag == 5) || (flag & 8)) reduction = 0;
+                if ((flag & 4) || (flag == 5) || (flag & 8)) reduction = 0; // Capture/Promo
+
+                // Safety
+                if (reduction < 0) reduction = 0;
+                if (reduction > depth - 1) reduction = depth - 1;
             }
 
             score = -negamax(pos, depth - 1 - reduction + ext, -alpha - 1, -alpha, ply + 1, true, move, 0);
@@ -610,6 +694,11 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 }
 
 void Search::start(Position& pos, const SearchLimits& limits) {
+    static bool init = false;
+    if (!init) {
+        init_lmr();
+        init = true;
+    }
     stop_flag = false;
     node_count = 0;
     start_time = steady_clock::now();
@@ -638,7 +727,7 @@ void Search::start(Position& pos, const SearchLimits& limits) {
             if (allocated_time_limit < 1) allocated_time_limit = 1;
         }
     }
-    if (limits.infinite) allocated_time_limit = 2000000000;
+    if (limits.infinite) allocated_time_limit = 0; // Infinite means no time limit, handled by stop_flag from GUI
 
     TTable.new_search();
     iter_deep(pos, limits);
