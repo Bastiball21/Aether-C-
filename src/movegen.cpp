@@ -66,26 +66,6 @@ namespace MoveGen {
                 Bitboard common = attacks & enemies;
                 while (common) {
                     Square to = (Square)Bitboards::pop_lsb(common);
-                    // Reverse direction to get From.
-                    // To get to 'to', we moved 'dir'. So from = to - dir.
-                    // But for black moving south-east (-7), 'from' is 'to' - (-7) = to + 7?
-                    // Yes. But operator- handles int.
-
-                    // Actually, the simpler way is to re-calculate from based on to and pawn locations.
-                    // But assuming direction logic holds:
-                    // White NW (+7): to = from + 7. from = to - 7.
-                    // Black SE (-7): to = from - 7. from = to + 7.
-
-                    // My Direction enum:
-                    // NORTH_WEST = 7
-                    // SOUTH_EAST = -7
-
-                    // operator-:
-                    // s - d = s - (int)d
-                    // White NW: to - 7. Correct.
-                    // Black SE: to - (-7) = to + 7. Correct.
-
-                    // However, I need to match the specific direction passed.
                     Square from = to - dir;
 
                      if (rank_of(from) == Rank7) { // Promo Capture
@@ -231,6 +211,17 @@ namespace MoveGen {
             generate_piece_moves<BLACK, true, false>(pos, list);
             generate_castling<BLACK>(pos, list);
         }
+    }
+
+    bool is_pseudo_legal(const Position& pos, uint16_t move) {
+        // Fallback: Generate all moves and check
+        // This is slow but 100% robust
+        MoveList list;
+        generate_all(pos, list);
+        for(int i=0; i<list.count; i++) {
+            if (list.moves[i] == move) return true;
+        }
+        return false;
     }
 
 } // namespace MoveGen

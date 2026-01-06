@@ -22,6 +22,9 @@ namespace MoveGen {
     void generate_captures(const Position& pos, MoveList& list);
     void generate_quiets(const Position& pos, MoveList& list);
 
+    // Check if a move is pseudo-legal (valid piece, valid destination, ignoring pins/checks)
+    bool is_pseudo_legal(const Position& pos, uint16_t move);
+
 } // namespace MoveGen
 
 #endif // MOVEGEN_H
