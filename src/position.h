@@ -26,6 +26,7 @@ public:
     Piece piece_on(Square s) const { return board[s]; }
     Color side_to_move() const { return side; }
     Key key() const { return st_key; }
+    Key pawn_key() const { return p_key; }
     Square en_passant_square() const { return ep_square; }
     int castling_rights_mask() const { return castling; }
     int rule50_count() const { return rule50; }
@@ -71,9 +72,11 @@ private:
     int halfmove_clock; // Total plies
 
     Key st_key;
+    Key p_key;
 
     struct StateInfo {
         Key key;
+        Key pawn_key;
         int castling;
         Square ep_square;
         int rule50;

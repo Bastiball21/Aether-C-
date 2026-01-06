@@ -7,6 +7,7 @@ namespace Eval {
 
     // Helper structs
     struct PawnEntry {
+        Key key;
         int score_mg;
         int score_eg;
         Bitboard passed_pawns[2];

@@ -1,5 +1,7 @@
 #include "bitboard.h"
+#include "magics.h"
 #include <vector>
+#include <iostream>
 
 namespace Bitboards {
 
@@ -7,12 +9,16 @@ namespace Bitboards {
     Bitboard KnightAttacks[64];
     Bitboard KingAttacks[64];
 
-    // Simple magic/plain lookup implementation for now to save complexity
-    // For a serious engine, Magics are better, but for portability in this constraints,
-    // I'll implement "Plain Magic" (or just on-the-fly for now if I want to be super safe,
-    // but looking at `eval.rs` usage in tight loops, I need speed).
-    // Let's implement a basic sliding attack generator used for initialization.
+    // Magic Bitboards Tables
+    // Total size ~ 800KB + small overhead
+    std::vector<Bitboard> RookTable;
+    std::vector<Bitboard> BishopTable;
 
+    // Offsets into the table
+    int RookOffsets[64];
+    int BishopOffsets[64];
+
+    // Helper to generate attacks for init (same as generator)
     Bitboard mask_bishop_attacks(Square sq) {
         Bitboard attacks = 0;
         int r, f;
@@ -37,7 +43,7 @@ namespace Bitboards {
         return attacks;
     }
 
-    Bitboard bishop_attacks_on_the_fly(Square sq, Bitboard block) {
+    Bitboard bishop_attacks_slow(Square sq, Bitboard block) {
         Bitboard attacks = 0;
         int r, f;
         int tr = rank_of(sq);
@@ -65,7 +71,7 @@ namespace Bitboards {
         return attacks;
     }
 
-    Bitboard rook_attacks_on_the_fly(Square sq, Bitboard block) {
+    Bitboard rook_attacks_slow(Square sq, Bitboard block) {
         Bitboard attacks = 0;
         int r, f;
         int tr = rank_of(sq);
@@ -93,8 +99,76 @@ namespace Bitboards {
         return attacks;
     }
 
-    // Leaper Initialization
+    void init_magics() {
+        int r_idx = 0;
+        int b_idx = 0;
+
+        // Calculate offsets
+        for (int s = 0; s < 64; s++) {
+            RookOffsets[s] = r_idx;
+            r_idx += (1 << (64 - RookShifts[s]));
+
+            BishopOffsets[s] = b_idx;
+            b_idx += (1 << (64 - BishopShifts[s]));
+        }
+
+        RookTable.resize(r_idx);
+        BishopTable.resize(b_idx);
+
+        for (int s = 0; s < 64; s++) {
+            Bitboard mask = mask_rook_attacks((Square)s);
+            int bits = 64 - RookShifts[s]; // The number of set bits in mask should match this? No.
+            // bits = number of relevant bits in occupancy.
+            // 64 - shift = bits.
+            // The mask should have 'bits' number of set bits.
+            // Actually popcount(mask) == bits.
+
+            int combinations = (1 << bits);
+            for (int i = 0; i < combinations; i++) {
+                 Bitboard occ = 0;
+                 int idx = 0;
+                 Bitboard m = mask;
+                 while(m) {
+                     int bit = std::countr_zero(m); // or __builtin_ctzll
+                     m &= m - 1;
+                     if (i & (1 << idx)) {
+                         occ |= (1ULL << bit);
+                     }
+                     idx++;
+                 }
+
+                 // Magic Index
+                 uint64_t magic_idx = (occ * RookMagics[s]) >> RookShifts[s];
+                 RookTable[RookOffsets[s] + magic_idx] = rook_attacks_slow((Square)s, occ);
+            }
+        }
+
+        for (int s = 0; s < 64; s++) {
+            Bitboard mask = mask_bishop_attacks((Square)s);
+            int bits = 64 - BishopShifts[s];
+            int combinations = (1 << bits);
+            for (int i = 0; i < combinations; i++) {
+                 Bitboard occ = 0;
+                 int idx = 0;
+                 Bitboard m = mask;
+                 while(m) {
+                     int bit = std::countr_zero(m);
+                     m &= m - 1;
+                     if (i & (1 << idx)) {
+                         occ |= (1ULL << bit);
+                     }
+                     idx++;
+                 }
+
+                 // Magic Index
+                 uint64_t magic_idx = (occ * BishopMagics[s]) >> BishopShifts[s];
+                 BishopTable[BishopOffsets[s] + magic_idx] = bishop_attacks_slow((Square)s, occ);
+            }
+        }
+    }
+
     void init() {
+        // Leapers
         for (int sq = 0; sq < 64; sq++) {
             // Pawns
             Bitboard b = (1ULL << sq);
@@ -133,6 +207,8 @@ namespace Bitboards {
             }
             KingAttacks[sq] = ki;
         }
+
+        init_magics();
     }
 
     Bitboard get_pawn_attacks(Square sq, Color side) {
@@ -147,23 +223,22 @@ namespace Bitboards {
         return KingAttacks[sq];
     }
 
-    // Using on-the-fly for now. It is slow (function call + loops) but correct.
-    // Given the task is "Port logic" and "High Performance", I should ideally use Magics.
-    // But Magics require large tables and init code.
-    // I'll stick to on-the-fly for this step to ensure I get the logic ported, then optimize if needed.
-    // NOTE: On modern CPUs, on-the-fly with PEXT is fast, but standard loop is slow.
-    // However, I can't easily paste 2MB of magic numbers here.
-
     Bitboard get_bishop_attacks(Square sq, Bitboard occ) {
-        return bishop_attacks_on_the_fly(sq, occ);
+        occ &= mask_bishop_attacks(sq);
+        occ *= BishopMagics[sq];
+        occ >>= BishopShifts[sq];
+        return BishopTable[BishopOffsets[sq] + occ];
     }
 
     Bitboard get_rook_attacks(Square sq, Bitboard occ) {
-        return rook_attacks_on_the_fly(sq, occ);
+        occ &= mask_rook_attacks(sq);
+        occ *= RookMagics[sq];
+        occ >>= RookShifts[sq];
+        return RookTable[RookOffsets[sq] + occ];
     }
 
     Bitboard get_queen_attacks(Square sq, Bitboard occ) {
-        return bishop_attacks_on_the_fly(sq, occ) | rook_attacks_on_the_fly(sq, occ);
+        return get_bishop_attacks(sq, occ) | get_rook_attacks(sq, occ);
     }
 
 } // namespace Bitboards
