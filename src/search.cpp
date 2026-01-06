@@ -22,7 +22,6 @@ int64_t nodes_limit_count = 0;
 // Constants
 const int INFINITY_SCORE = 32000;
 const int MATE_SCORE = 31000;
-// const int MAX_PLY = 128; // Defined in search.h
 
 // LMR Table
 int LMRTable[64][64];
@@ -132,63 +131,82 @@ void check_limits() {
 class MovePicker {
     const Position& pos;
     MoveGen::MoveList list;
+    MoveGen::MoveList bad_captures; // To store bad captures without regenerating
+
     int current_idx = 0;
+    int bad_current_idx = 0;
+
     int scores[256];
+    int bad_scores[256];
+
     uint16_t tt_move;
     uint16_t prev_move;
+    uint16_t killers[2];
     int ply;
     int stage;
     bool captures_only;
+    int killer_idx = 0;
 
     enum Stage {
-        TT_MOVE_STAGE,
-        GEN_CAPTURES,
-        CAPTURES_STAGE,
-        GEN_QUIETS,
-        QUIETS_STAGE,
-        FINISHED
+        STAGE_TT_MOVE,
+        STAGE_GEN_CAPTURES,
+        STAGE_GOOD_CAPTURES,
+        STAGE_KILLERS,
+        STAGE_GEN_QUIETS,
+        STAGE_QUIETS,
+        STAGE_BAD_CAPTURES,
+        STAGE_FINISHED
     };
+
+    static const int SCORE_GOOD_CAPTURE_BASE = 200000;
+    static const int SCORE_BAD_CAPTURE_BASE = -200000;
 
 public:
     MovePicker(const Position& p, uint16_t tm, int pl, uint16_t pm)
-        : pos(p), tt_move(tm), prev_move(pm), ply(pl), stage(TT_MOVE_STAGE), captures_only(false) {}
+        : pos(p), tt_move(tm), prev_move(pm), ply(pl), stage(STAGE_TT_MOVE), captures_only(false), killer_idx(0) {
+        if (ply < MAX_PLY) {
+            killers[0] = KillerMoves[ply][0];
+            killers[1] = KillerMoves[ply][1];
+        } else {
+            killers[0] = killers[1] = 0;
+        }
+    }
 
     MovePicker(const Position& p, bool caps_only)
-        : pos(p), tt_move(0), prev_move(0), ply(0), stage(GEN_CAPTURES), captures_only(caps_only) {
-        if (!captures_only) stage = TT_MOVE_STAGE; // Should usually be captures only for quiescence, but fallback
+        : pos(p), tt_move(0), prev_move(0), ply(0), stage(STAGE_GEN_CAPTURES), captures_only(caps_only), killer_idx(0) {
+        killers[0] = killers[1] = 0;
     }
 
     void score_captures() {
         for (int i = 0; i < list.count; i++) {
             uint16_t m = list.moves[i];
-
             int flag = (m >> 12);
             Piece victim = pos.piece_on((Square)(m & 0x3F));
             int victim_val = 0;
-            if (flag == 5) victim_val = 1; // EP
+            if (flag == 5) victim_val = 1;
             else if (victim != NO_PIECE) {
-                int v_type = victim % 6;
                 static const int val[] = {1, 3, 3, 5, 9, 0};
-                victim_val = val[v_type];
+                victim_val = val[victim % 6];
             }
-
-            // Promotion
             if (flag & 8) {
-                int p = (flag & 3);
                 static const int promo_vals[] = {3, 3, 5, 9};
-                victim_val += promo_vals[p];
+                victim_val += promo_vals[flag & 3];
             }
-
             Piece attacker = pos.piece_on((Square)((m >> 6) & 0x3F));
             int attacker_val = 1;
             if (attacker != NO_PIECE) {
-                int a_type = attacker % 6;
                 static const int val[] = {1, 3, 3, 5, 9, 0};
-                attacker_val = val[a_type];
+                attacker_val = val[attacker % 6];
             }
 
             int see_score = see(pos, m);
-            scores[i] = 100000 + (victim_val * 10) - attacker_val + (see_score > 0 ? see_score / 10 : 0);
+            int mvv_lva = (victim_val * 10) - attacker_val;
+
+            if (see_score >= 0) {
+                scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score;
+            } else {
+                scores[i] = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score;
+            }
         }
     }
 
@@ -202,29 +220,21 @@ public:
 
         for (int i = 0; i < list.count; i++) {
             uint16_t m = list.moves[i];
+            Square t = (Square)(m & 0x3F);
+            Piece pc = pos.piece_on((Square)((m >> 6) & 0x3F));
+            int pt = pc % 6;
+
             int score = 0;
-
-            if (ply < MAX_PLY && KillerMoves[ply][0] == m) score = 90000;
-            else if (ply < MAX_PLY && KillerMoves[ply][1] == m) score = 80000;
-            else {
-                Square f = (Square)((m >> 6) & 0x3F);
-                Square t = (Square)(m & 0x3F);
-                Piece pc = pos.piece_on(f);
-                int pt = pc % 6;
-
-                if (Search::UseHistory) {
-                    score = History[pos.side_to_move()][pt][t];
-                    if (prev_pc != NO_PIECE && prev_to != SQ_NONE) {
-                        int pt_prev = prev_pc % 6;
-                        score += ContHistory[pos.side_to_move()][pt_prev][prev_to][pt][t];
-                    }
-                    if (prev_move != 0) {
-                        Square pf = (Square)((prev_move >> 6) & 0x3F);
-                        Square pt_sq = (Square)(prev_move & 0x3F);
-                        int key = (pf << 6) | pt_sq;
-                        if (CounterMove[pos.side_to_move()][key] == m) {
-                            score += 1500;
-                        }
+            if (Search::UseHistory) {
+                score = History[pos.side_to_move()][pt][t];
+                if (prev_pc != NO_PIECE && prev_to != SQ_NONE) {
+                    score += ContHistory[pos.side_to_move()][prev_pc % 6][prev_to][pt][t];
+                }
+                if (prev_move != 0) {
+                    Square pf = (Square)((prev_move >> 6) & 0x3F);
+                    Square pt_sq = (Square)(prev_move & 0x3F);
+                    if (CounterMove[pos.side_to_move()][(pf << 6) | pt_sq] == m) {
+                        score += 2000;
                     }
                 }
             }
@@ -232,88 +242,149 @@ public:
         }
     }
 
+    uint16_t pick_best(int min_score) {
+        if (current_idx >= list.count) return 0;
+        int best_idx = -1;
+        int best_score = -2147483647;
+        for (int i = current_idx; i < list.count; i++) {
+             if (scores[i] > best_score) {
+                 best_score = scores[i];
+                 best_idx = i;
+             }
+        }
+        if (best_idx != -1 && best_score >= min_score) {
+             std::swap(list.moves[current_idx], list.moves[best_idx]);
+             std::swap(scores[current_idx], scores[best_idx]);
+             return list.moves[current_idx++];
+        }
+        return 0;
+    }
+
+    // Pick best for Bad Captures list
+    uint16_t pick_best_bad() {
+        if (bad_current_idx >= bad_captures.count) return 0;
+        int best_idx = -1;
+        int best_score = -2147483647;
+        for (int i = bad_current_idx; i < bad_captures.count; i++) {
+             if (bad_scores[i] > best_score) {
+                 best_score = bad_scores[i];
+                 best_idx = i;
+             }
+        }
+        if (best_idx != -1) {
+             std::swap(bad_captures.moves[bad_current_idx], bad_captures.moves[best_idx]);
+             std::swap(bad_scores[bad_current_idx], bad_scores[best_idx]);
+             return bad_captures.moves[bad_current_idx++];
+        }
+        return 0;
+    }
+
     uint16_t next() {
+        // if (node_count > 1000000) return 0; // Safety brake
         while (true) {
-            if (stage == TT_MOVE_STAGE) {
-                stage = GEN_CAPTURES;
-                if (tt_move != 0) return tt_move; // Caller must check legality? Usually yes.
-                // But in negamax we checked it partially.
-                // Actually `MovePicker` returns pseudo-legal moves.
-                // We should rely on `generate_all` validation or `pos.make_move` + check validity.
-                // However, returning TT move without generating it first is risky if it's not legal.
-                // But we validated TT move in negamax before creating MovePicker?
-                // Wait, in `negamax`:
-                // `bool tt_hit = TTable.probe(..., tte); if (tt_hit) tt_move = tte.move;`
-                // `// Validate TT Move` block is there.
-                // So tt_move is at least pseudo-legal (pieces exist).
-                // Strict legality check happens after make_move.
-                continue;
-            }
+            switch (stage) {
+                case STAGE_TT_MOVE:
+                    stage = STAGE_GEN_CAPTURES;
+                    if (tt_move != 0) return tt_move;
+                    break;
 
-            if (stage == GEN_CAPTURES) {
-                MoveGen::generate_captures(pos, list);
-                score_captures();
-                current_idx = 0;
-                stage = CAPTURES_STAGE;
-            }
+                case STAGE_GEN_CAPTURES: {
+                    MoveGen::generate_captures(pos, list);
+                    score_captures();
 
-            if (stage == CAPTURES_STAGE) {
-                if (current_idx >= list.count) {
-                    if (captures_only) {
-                        stage = FINISHED;
-                        return 0;
+                    // Partition into Good (in list) and Bad (in bad_captures)
+                    bad_captures.count = 0;
+                    int good_count = 0;
+
+                    // Iterate current list and split
+                    // We can do this in-place but need to preserve scores.
+                    // We'll iterate and construct new arrangement.
+                    // But scores match indices.
+
+                    // Safe way: use temporary buffer or swap to end.
+                    // Swapping to end logic:
+                    // If Bad, swap to end. Decrement end pointer.
+                    // But we want to extract Bad to separate list to reuse 'list' for Quiets later.
+
+                    for (int i = 0; i < list.count; i++) {
+                        if (scores[i] < SCORE_GOOD_CAPTURE_BASE - 100000) { // Bad Capture
+                            bad_captures.add(list.moves[i]);
+                            bad_scores[bad_captures.count - 1] = scores[i];
+                        } else { // Good Capture
+                            list.moves[good_count] = list.moves[i];
+                            scores[good_count] = scores[i];
+                            good_count++;
+                        }
                     }
-                    stage = GEN_QUIETS;
-                    continue;
+                    list.count = good_count;
+
+                    current_idx = 0;
+                    stage = STAGE_GOOD_CAPTURES;
+                    break;
                 }
 
-                // Pick best
-                int best_idx = current_idx;
-                int best_score = scores[current_idx];
-                for (int i = current_idx + 1; i < list.count; i++) {
-                    if (scores[i] > best_score) {
-                        best_score = scores[i];
-                        best_idx = i;
+                case STAGE_GOOD_CAPTURES: {
+                    uint16_t m = pick_best(-2000000000); // Pick any from Good list
+                    if (m == 0) {
+                        if (captures_only) stage = STAGE_BAD_CAPTURES;
+                        else stage = STAGE_KILLERS;
+                        break;
                     }
+                    if (m == tt_move) continue;
+                    return m;
                 }
-                std::swap(list.moves[current_idx], list.moves[best_idx]);
-                std::swap(scores[current_idx], scores[best_idx]);
 
-                uint16_t m = list.moves[current_idx++];
-                if (m == tt_move) continue;
-                return m;
-            }
+                case STAGE_KILLERS:
+                    if (killer_idx < 2) {
+                        uint16_t m = killers[killer_idx++];
+                        if (m != 0 && m != tt_move) {
+                            if (MoveGen::is_pseudo_legal(pos, m)) {
+                                int flag = (m >> 12);
+                                bool is_cap = ((flag & 4) || (flag == 5) || (flag & 8));
+                                if (is_cap) {
+                                     if (see(pos, m) >= 0) continue;
+                                }
+                                return m;
+                            }
+                        }
+                        continue;
+                    }
+                    stage = STAGE_GEN_QUIETS;
+                    break;
 
-            if (stage == GEN_QUIETS) {
-                MoveGen::generate_quiets(pos, list);
-                score_quiets();
-                current_idx = 0;
-                stage = QUIETS_STAGE;
-            }
+                case STAGE_GEN_QUIETS:
+                    MoveGen::generate_quiets(pos, list);
+                    score_quiets();
+                    current_idx = 0;
+                    stage = STAGE_QUIETS;
+                    break;
 
-            if (stage == QUIETS_STAGE) {
-                if (current_idx >= list.count) {
-                    stage = FINISHED;
+                case STAGE_QUIETS: {
+                    uint16_t m = pick_best(-2000000000);
+                    if (m == 0) {
+                         stage = STAGE_BAD_CAPTURES;
+                         break;
+                    }
+                    if (m == tt_move) continue;
+                    if (m == killers[0] || m == killers[1]) continue;
+                    return m;
+                }
+
+                case STAGE_BAD_CAPTURES: {
+                    uint16_t m = pick_best_bad();
+                    if (m == 0) {
+                        stage = STAGE_FINISHED;
+                        break;
+                    }
+                    if (m == tt_move) continue;
+                    if (m == killers[0] || m == killers[1]) continue;
+                    // Already filtered Good Captures out
+                    return m;
+                }
+
+                case STAGE_FINISHED:
                     return 0;
-                }
-
-                int best_idx = current_idx;
-                int best_score = scores[current_idx];
-                for (int i = current_idx + 1; i < list.count; i++) {
-                    if (scores[i] > best_score) {
-                        best_score = scores[i];
-                        best_idx = i;
-                    }
-                }
-                std::swap(list.moves[current_idx], list.moves[best_idx]);
-                std::swap(scores[current_idx], scores[best_idx]);
-
-                uint16_t m = list.moves[current_idx++];
-                if (m == tt_move) continue;
-                return m;
             }
-
-            if (stage == FINISHED) return 0;
         }
     }
 };
@@ -331,7 +402,6 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
 
     bool in_check = pos.in_check();
 
-    // Stand-pat only if not in check
     if (!in_check) {
         int stand_pat = Eval::evaluate_light(pos);
         if (stand_pat >= beta) return beta;
@@ -342,22 +412,23 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
         if (alpha < stand_pat) alpha = stand_pat;
     }
 
-    // If in check, we must search all evasions (not just captures)
     MovePicker mp(pos, !in_check);
     uint16_t move;
-
     int moves_searched = 0;
 
     while ((move = mp.next())) {
-        // SEE pruning for captures in QSearch
-        // Skip losing captures if not in check
         if (!in_check) {
-            int flag = (move >> 12);
-            bool is_cap = ((flag & 4) || (flag == 5));
-            bool is_promo = (flag & 8);
-            if (is_cap && !is_promo) {
-                if (see(pos, move) < 0) continue;
-            }
+            // We can trust MovePicker to deliver Good Captures first.
+            // Bad captures come later.
+            // But QSearch logic is: if (!in_check && see < 0) continue;
+            // With staged MovePicker, if we are in STAGE_BAD_CAPTURES, see is < 0.
+            // So we can skip bad captures entirely in MovePicker if we wanted.
+            // But we didn't implement logic to skip in MP.
+            // So we check here.
+            // Optimization: if we are iterating bad captures, we know they are bad.
+            // But MovePicker doesn't expose stage.
+            // So we just call see again. It's safe.
+            if (see(pos, move) < 0) continue;
         }
 
         if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
@@ -381,7 +452,7 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
     }
 
     if (in_check && moves_searched == 0) {
-        return -MATE_SCORE + ply; // Checkmate
+        return -MATE_SCORE + ply;
     }
 
     return alpha;
@@ -412,16 +483,12 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     bool tt_hit = TTable.probe(pos.key(), tte);
     if (tt_hit) {
         tt_move = tte.move;
-
-        // Validate TT Move
         if (tt_move != 0) {
              Square f = (Square)((tt_move >> 6) & 0x3F);
-             Square t = (Square)(tt_move & 0x3F);
-             if (f < 0 || f >= 64 || t < 0 || t >= 64 || pos.piece_on(f) == NO_PIECE || pos.piece_on(f) / 6 != pos.side_to_move()) {
+             if (f < 0 || f >= 64 || pos.piece_on(f) == NO_PIECE || pos.piece_on(f) / 6 != pos.side_to_move()) {
                   tt_move = 0;
              }
         }
-
         if (tte.depth >= depth) {
             if (tte.bound == 1) return tte.score;
             if (tte.bound == 2 && tte.score <= alpha) return alpha;
@@ -429,7 +496,6 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
     }
 
-    // IID
     if (depth >= 5 && tt_move == 0) {
         int iid_depth = depth - 2;
         negamax(pos, iid_depth, alpha, beta, ply, false, prev_move, 0);
@@ -438,7 +504,6 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
     }
 
-    // Singular Extensions
     int singular_ext = 0;
     if (Search::UseSingular && depth >= 6 && tt_move != 0 && tte.bound == 1 && tte.depth >= depth - 1 && excluded_move == 0) {
         int tt_score = tte.score;
@@ -453,11 +518,8 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     int static_eval = 0;
     if (!in_check) {
         static_eval = Eval::evaluate(pos);
-
-        // RFP
         if (depth <= 3 && static_eval - 120 * depth >= beta) return static_eval;
 
-        // ProbCut
         if (Search::UseProbCut && depth >= 5 && std::abs(beta) < MATE_SCORE - 100) {
             int prob_margin = 120;
             MoveGen::MoveList cap_list;
@@ -479,7 +541,6 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             }
         }
 
-        // NMP
         if (Search::UseNMP && null_allowed && depth >= 3 && static_eval >= beta && (pos.non_pawn_material(pos.side_to_move()) >= 320 + 330)) {
             int reduction = 2;
             if (depth >= 7) reduction = 3;
@@ -504,14 +565,11 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     int best_score = -INFINITY_SCORE;
     uint16_t best_move = 0;
 
-    // Store tried quiets for history update
     uint16_t tried_quiets[512];
     int tried_quiets_cnt = 0;
 
     while ((move = mp.next())) {
         if (move == excluded_move) continue;
-
-        // Skip ghost moves
         if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
 
         bool is_cap = ((move >> 12) & 4) || ((move >> 12) == 5) || ((move >> 12) & 8);
@@ -521,7 +579,6 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             tried_quiets[tried_quiets_cnt++] = move;
         }
 
-        // LMP
         if (is_quiet && !in_check && depth <= 5) {
              static const int lmp_table[] = {0, 3, 5, 8, 12, 20};
              if (moves_searched >= lmp_table[depth]) {
@@ -530,19 +587,15 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              }
         }
 
-        // Shallow Futility (Razoring-like)
         if (!in_check && is_quiet && depth < 6 && static_eval + 150 * depth <= alpha) {
-             // If static eval is way below alpha, prune quiet moves
              continue;
         }
 
-        // Futility
         if (depth == 1 && !in_check && is_quiet) {
              int fut_margin = 150;
              if (static_eval + fut_margin <= alpha) continue;
         }
 
-        // SEE pruning
         if (is_cap && !in_check && depth <= 5) {
             bool is_promo = (move >> 12) & 8;
             if (!is_promo) {
@@ -557,14 +610,13 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             continue;
         }
 
+        bool gives_check = pos.in_check();
+
         moves_searched++;
         TTable.prefetch(pos.key());
 
-        // Extensions
         int ext = 0;
         int flag = (move >> 12);
-
-        // Recapture
         if (prev_move != 0) {
              Square prev_to = (Square)(prev_move & 0x3F);
              Square to_sq = (Square)(move & 0x3F);
@@ -572,19 +624,16 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                  if ((flag & 4) || (flag == 5) || (flag & 8)) ext = 1;
              }
         }
-
-        // Singular
         if (move == tt_move) ext += singular_ext;
 
-        // Pawn Push
-        Square from_sq = (Square)((move >> 6) & 0x3F);
+        // Square from_sq = (Square)((move >> 6) & 0x3F); // Unused
         Square to_sq = (Square)(move & 0x3F);
-        Piece pc = pos.piece_on(from_sq);
+        Piece moved_piece = pos.piece_on(to_sq);
 
-        if (ext == 0 && (pc == W_PAWN || pc == B_PAWN)) {
+        if (ext == 0 && (moved_piece == W_PAWN || moved_piece == B_PAWN)) {
              int r = rank_of(to_sq);
-             if (pos.side_to_move() == WHITE && r == RANK_7) ext = 1;
-             else if (pos.side_to_move() == BLACK && r == RANK_2) ext = 1;
+             if (pos.side_to_move() == BLACK && r == RANK_7) ext = 1;
+             else if (pos.side_to_move() == WHITE && r == RANK_2) ext = 1;
              if ((flag & 8)) ext = 1;
         }
 
@@ -598,12 +647,11 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                 int m = std::min(moves_searched, 63);
                 reduction = LMRTable[d][m];
 
-                // Adjust LMR
-                if (is_quiet) reduction += 1; // More reduction for quiets
+                if (is_quiet) reduction += 1;
                 if (ext > 0) reduction = 0;
-                if ((flag & 4) || (flag == 5) || (flag & 8)) reduction = 0; // Capture/Promo
+                if ((flag & 4) || (flag == 5) || (flag & 8)) reduction = 0;
+                if (gives_check) reduction = 0;
 
-                // Safety
                 if (reduction < 0) reduction = 0;
                 if (reduction > depth - 1) reduction = depth - 1;
             }
@@ -649,8 +697,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                                  Square prev_to = (Square)(prev_move & 0x3F);
                                  Piece prev_pc = pos.piece_on(prev_to);
                                  if (prev_pc != NO_PIECE) {
-                                     int pt_prev = prev_pc % 6;
-                                     Search::update_continuation(pos.side_to_move(), pt_prev, prev_to, pt, t, depth_bonus);
+                                     Search::update_continuation(pos.side_to_move(), prev_pc % 6, prev_to, pt, t, depth_bonus);
                                  }
                                  Square prev_from = (Square)((prev_move >> 6) & 0x3F);
                                  Search::update_counter_move(pos.side_to_move(), prev_from, prev_to, move);
@@ -662,14 +709,12 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                                      Square bf = (Square)((bad_move >> 6) & 0x3F);
                                      Square bt = (Square)(bad_move & 0x3F);
                                      Piece bpc = pos.piece_on(bf);
-                                     int bpt = bpc % 6;
-                                     Search::update_history(pos.side_to_move(), bpt, bt, -depth_bonus);
+                                     Search::update_history(pos.side_to_move(), bpc % 6, bt, -depth_bonus);
                                      if (prev_move != 0) {
                                          Square prev_to = (Square)(prev_move & 0x3F);
                                          Piece prev_pc = pos.piece_on(prev_to);
                                          if (prev_pc != NO_PIECE) {
-                                             int pt_prev = prev_pc % 6;
-                                             Search::update_continuation(pos.side_to_move(), pt_prev, prev_to, bpt, bt, -depth_bonus);
+                                             Search::update_continuation(pos.side_to_move(), prev_pc % 6, prev_to, bpc % 6, bt, -depth_bonus);
                                          }
                                      }
                                  }
@@ -704,7 +749,6 @@ void Search::start(Position& pos, const SearchLimits& limits) {
     start_time = steady_clock::now();
     nodes_limit_count = limits.nodes;
 
-    // Set Options
     Search::UseNMP = limits.use_nmp;
     Search::UseProbCut = limits.use_probcut;
     Search::UseSingular = limits.use_singular;
@@ -727,7 +771,7 @@ void Search::start(Position& pos, const SearchLimits& limits) {
             if (allocated_time_limit < 1) allocated_time_limit = 1;
         }
     }
-    if (limits.infinite) allocated_time_limit = 0; // Infinite means no time limit, handled by stop_flag from GUI
+    if (limits.infinite) allocated_time_limit = 0;
 
     TTable.new_search();
     iter_deep(pos, limits);
@@ -773,11 +817,11 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
         Position temp_pos = pos;
         int pv_depth = 0;
         std::vector<Key> pv_keys;
-        pv_keys.push_back(temp_pos.key());        while (pv_depth < depth) {
+        pv_keys.push_back(temp_pos.key());
+        while (pv_depth < depth) {
              TTEntry tte;
              if (!TTable.probe(temp_pos.key(), tte) || tte.move == 0) break;
 
-             // Validate TT move is legal here (hash collisions can corrupt PV)
              MoveGen::MoveList ml;
              MoveGen::generate_all(temp_pos, ml);
              bool found = false;
