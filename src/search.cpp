@@ -336,7 +336,7 @@ public:
                                 int flag = (m >> 12);
                                 bool is_cap = ((flag & 4) || (flag == 5) || (flag & 8));
                                 if (is_cap) {
-                                     if (see(pos, m) >= 0) continue;
+                                     continue;
                                 }
                                 return m;
                             }
