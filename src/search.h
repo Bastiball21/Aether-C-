@@ -45,6 +45,7 @@ public:
 
     // History Helpers
     static void update_history(int side, int pt, int to, int bonus);
+    static void update_capture_history(int side, int att, int to, int victim, int bonus);
     static void update_continuation(int side, int prev_pt, int prev_to, int pt, int to, int bonus);
     static void update_counter_move(int side, int prev_from, int prev_to, uint16_t move);
 

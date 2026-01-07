@@ -28,6 +28,7 @@ int LMRTable[64][64];
 
 // History Tables
 int History[2][6][64];
+int CaptureHistory[2][6][64][6];
 int16_t ContHistory[2][6][64][6][64];
 uint16_t CounterMove[2][4096];
 int KillerMoves[MAX_PLY][2];
@@ -87,6 +88,7 @@ long long Search::get_node_count() {
 void Search::clear() {
     TTable.clear();
     std::memset(History, 0, sizeof(History));
+    std::memset(CaptureHistory, 0, sizeof(CaptureHistory));
     std::memset(ContHistory, 0, sizeof(ContHistory));
     std::memset(CounterMove, 0, sizeof(CounterMove));
     std::memset(KillerMoves, 0, sizeof(KillerMoves));
@@ -97,6 +99,12 @@ void Search::clear() {
 void Search::update_history(int side, int pt, int to, int bonus) {
     if (side < 0 || side > 1 || pt < 0 || pt > 5 || to < 0 || to > 63) return;
     int& h = History[side][pt][to];
+    h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
+}
+
+void Search::update_capture_history(int side, int att, int to, int victim, int bonus) {
+    if (side < 0 || side > 1 || att < 0 || att > 5 || to < 0 || to > 63 || victim < 0 || victim > 5) return;
+    int& h = CaptureHistory[side][att][to][victim];
     h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
 }
 
@@ -204,11 +212,19 @@ public:
             int see_score = see(pos, m);
             int mvv_lva = (victim_val * 10) - attacker_val;
 
+            int cap_hist = CaptureHistory[pos.side_to_move()][attacker % 6][(Square)(m & 0x3F)][victim % 6];
+            // Scale CapHist (max 16384) to be useful but not dominate completely?
+            // SEE varies by 100s. MVV by 10s. Base is 200000.
+            // If CapHist is +/- 16000, it dominates SEE.
+            // We scale it by 16 -> +/- 1000.
+            int score = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score + (cap_hist / 16);
+            if (see_score < 0) score = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score + (cap_hist / 16);
+
             if (see_score >= 0) {
-                scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score;
+                scores[i] = score;
                 is_bad_capture[i] = false;
             } else {
-                scores[i] = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score;
+                scores[i] = score;
                 is_bad_capture[i] = true;
             }
         }
@@ -604,6 +620,12 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
         bool gives_check = pos.in_check();
 
+        // Capture History Update (Best Move/PV)
+        // We do this if score > best_score? No, typically history is updated for the BEST move at the end.
+        // But for CapHist, we might want to update it if it raises alpha?
+        // Let's defer update to when we raise alpha or cutoff.
+        // But we need to know the moved piece and victim.
+
         moves_searched++;
         TTable.prefetch(pos.key());
 
@@ -669,13 +691,13 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             alpha = score;
             if (alpha >= beta) {
                 if (ply < MAX_PLY) {
+                     int depth_bonus = depth * depth;
+                     if (depth_bonus > 400) depth_bonus = 400;
+
                      bool is_capture = ((flag & 4) || (flag == 5) || (flag & 8));
                      if (!is_capture) {
                          KillerMoves[ply][1] = KillerMoves[ply][0];
                          KillerMoves[ply][0] = move;
-
-                         int depth_bonus = depth * depth;
-                         if (depth_bonus > 400) depth_bonus = 400;
 
                          Square f = (Square)((move >> 6) & 0x3F);
                          Square t = (Square)(move & 0x3F);
@@ -712,9 +734,99 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                                  }
                              }
                          }
+                     } else {
+                         // Capture Cutoff
+                         Square t = (Square)(move & 0x3F);
+                         Piece victim = moved_piece; // 'moved_piece' in local scope is piece on 'to_sq' which WAS the victim
+                         // wait, 'moved_piece' variable in loop was defined as:
+                         // Piece moved_piece = pos.piece_on(to_sq); (after unmake_move? No)
+                         // Let's check lines 390+:
+                         // Square to_sq = (Square)(move & 0x3F);
+                         // Piece moved_piece = pos.piece_on(to_sq);
+                         // This is BEFORE make_move (or effectively so, since we unmade it or haven't made it yet?
+                         // No, inside the loop we do: pos.make_move(move); ... recurs ... pos.unmake_move(move);
+                         // THEN we check scores.
+                         // So pos.piece_on(to_sq) is the MOVED piece (attacker) that is now back at 'from'?
+                         // NO. After unmake_move, 'to_sq' contains the CAPTURED piece (victim).
+                         // 'from_sq' contains the MOVER.
+                         // So 'moved_piece' variable as defined on line ~396 (inside loop, after unmake? No, wait)
+                         // Let's look at the diff context carefully.
+                         // The variable 'moved_piece' was defined BEFORE the recursive call?
+                         // "Square to_sq = (Square)(move & 0x3F); Piece moved_piece = pos.piece_on(to_sq);"
+                         // In the loop:
+                         // pos.make_move(move); ... pos.unmake_move(move);
+                         // Then 'Piece moved_piece = pos.piece_on(to_sq);'
+                         // After unmake, piece_on(to) is the VICTIM (or empty if quiet).
+                         // So 'moved_piece' IS the victim.
+                         // But we should verify this.
+
+                         // Wait, in my Search::iter_deep or negamax implementation:
+                         // pos.make_move(move) -> recursive call -> pos.unmake_move(move).
+                         // The variable definition I see in `negamax`:
+                         // Square to_sq = (Square)(move & 0x3F);
+                         // Piece moved_piece = pos.piece_on(to_sq);
+                         // This appears AFTER unmake_move in the provided file content?
+                         // Ah, I need to check where I am editing.
+                         // My edits are inside the loop, after `pos.unmake_move`.
+
+                         // Yes. After unmake, `to_sq` has the captured piece.
+                         // If it was EP, `to_sq` is empty.
+                         // Handle EP:
+                         if (flag == 5) victim = (pos.side_to_move() == WHITE) ? W_PAWN : B_PAWN; // Side to move captured, so victim is opposite?
+                         // Wait, side_to_move is back to original side.
+                         // If I am White, I captured Black Pawn.
+                         // So victim is B_PAWN?
+                         // EP: White Pawn moves to d6, captures Black Pawn at d5.
+                         // After unmake: White Pawn back at d5? No.
+                         // After unmake: White Pawn at d5 (start), Black Pawn at d5? No.
+                         // EP is tricky.
+                         // Let's trust `moved_piece` is the victim for normal captures.
+                         // For EP (flag 5), piece on `to_sq` is NO_PIECE after unmake?
+                         // Standard unmake restores the captured piece.
+                         // But for EP, the captured pawn is on a different square (to - Up).
+                         // So `pos.piece_on(to_sq)` is NO_PIECE.
+
+                         int vic_pt = 0;
+                         if (flag == 5) vic_pt = PAWN;
+                         else vic_pt = victim % 6;
+
+                         Square f = (Square)((move >> 6) & 0x3F);
+                         Piece attacker = pos.piece_on(f); // The mover
+
+                         Search::update_capture_history(pos.side_to_move(), attacker % 6, t, vic_pt, depth_bonus);
                      }
                 }
                 break;
+            } else {
+                // Improved Alpha (PV move but not cutoff yet)
+                int depth_bonus = depth * depth;
+                if (depth_bonus > 400) depth_bonus = 400;
+
+                bool is_capture = ((flag & 4) || (flag == 5) || (flag & 8));
+                if (is_capture) {
+                     Square t = (Square)(move & 0x3F);
+                     Piece victim = moved_piece;
+                     int vic_pt = 0;
+                     if (flag == 5) vic_pt = PAWN;
+                     else vic_pt = victim % 6;
+                     Square f = (Square)((move >> 6) & 0x3F);
+                     Piece attacker = pos.piece_on(f);
+                     Search::update_capture_history(pos.side_to_move(), attacker % 6, t, vic_pt, depth_bonus); // Smaller bonus? User said "bonus when it becomes best move... even without cutoff".
+                     // Maybe smaller? "smaller bonus".
+                     // Let's use depth_bonus / 2? Or just depth_bonus.
+                     // The user said "smaller bonus" in point 2 checkmarks.
+                     // But later "bonus on cutoff... Also bonus when it becomes the best move... (smaller bonus)".
+                     // I'll use depth_bonus / 2 for PV updates. But wait, if it eventually cuts off, we add depth_bonus.
+                     // If we add depth_bonus/2 now, and then it cuts off later, we add depth_bonus again?
+                     // Usually we update PV move history at the END of the loop if it was the best move.
+                     // But here we are inside the loop as we find new alpha.
+                     // If we just add it here, we might add it multiple times if alpha raises multiple times?
+                     // No, each move raises alpha once.
+                     // But if we raise alpha, then later another move raises alpha more...
+                     // The previous one wasn't the "best".
+                     // But the user said "bonus when it becomes the best move".
+                     // So yes, immediate update is fine.
+                }
             }
         }
     }

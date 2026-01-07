@@ -102,13 +102,17 @@ void TranspositionTable::store(Key key, uint16_t move, int score, int eval, int 
 
         // Scoring replacement suitability
         // Higher score = better candidate to replace (victim)
-        int victim_score = age * 1000;
-        victim_score -= e.depth; // Deeper = keep (lower victim score)
+        // int victim_score = age * 1000;
+        // victim_score -= e.depth; // Deeper = keep (lower victim score)
 
         // Penalty for replacing exact entry?
         // "never replace EXACT with non-EXACT if depths are similar"
         // EXACT is 1.
-        if (e.bound() == 1) victim_score -= 5000;
+        // if (e.bound() == 1) victim_score -= 5000;
+
+        // New formula: age * 1000 - depth * 10 - (isExact ? 1000 : 0)
+        int victim_score = age * 1000 - e.depth * 10;
+        if (e.bound() == 1) victim_score -= 1000;
 
         if (victim_score > best_score) {
             best_score = victim_score;
