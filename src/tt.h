@@ -73,4 +73,19 @@ private:
 
 extern TranspositionTable TTable;
 
+// Mate score normalization constants and helpers
+constexpr int MATE_TH = 30000;
+
+inline int score_to_tt(int score, int ply) {
+    if (score > MATE_TH) return score + ply;
+    if (score < -MATE_TH) return score - ply;
+    return score;
+}
+
+inline int score_from_tt(int score, int ply) {
+    if (score > MATE_TH) return score - ply;
+    if (score < -MATE_TH) return score + ply;
+    return score;
+}
+
 #endif // TT_H

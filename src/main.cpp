@@ -82,6 +82,10 @@ void join_search() {
 }
 
 int main() {
+    // I/O Speedup
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+
     Position pos;
     pos.set_startpos();
 
@@ -96,19 +100,19 @@ int main() {
         ss >> token;
 
         if (token == "uci") {
-            std::cout << "id name Aether-C" << std::endl;
-            std::cout << "id author Bastiball21" << std::endl;
-            std::cout << "option name Hash type spin default 64 min 1 max 65536" << std::endl;
-            std::cout << "option name Threads type spin default 1 min 1 max 64" << std::endl;
-            std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000" << std::endl;
-            std::cout << "option name UCI_Chess960 type check default false" << std::endl;
-            std::cout << "option name NullMove type check default true" << std::endl;
-            std::cout << "option name ProbCut type check default true" << std::endl;
-            std::cout << "option name SingularExt type check default true" << std::endl;
-            std::cout << "option name UseHistory type check default true" << std::endl;
-            std::cout << "uciok" << std::endl;
+            std::cout << "id name Aether-C\n";
+            std::cout << "id author Bastiball21\n";
+            std::cout << "option name Hash type spin default 64 min 1 max 65536\n";
+            std::cout << "option name Threads type spin default 1 min 1 max 64\n";
+            std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000\n";
+            std::cout << "option name UCI_Chess960 type check default false\n";
+            std::cout << "option name NullMove type check default true\n";
+            std::cout << "option name ProbCut type check default true\n";
+            std::cout << "option name SingularExt type check default true\n";
+            std::cout << "option name UseHistory type check default true\n";
+            std::cout << "uciok\n" << std::flush;
         } else if (token == "isready") {
-            std::cout << "readyok" << std::endl;
+            std::cout << "readyok\n" << std::flush;
         } else if (token == "setoption") {
             std::string name, value;
             ss >> token; // name
@@ -123,7 +127,7 @@ int main() {
                         TTable.resize(OptHash);
                     } else if (name == "Threads") {
                         OptThreads = std::stoi(value);
-                        std::cout << "info string Threads > 1 not supported yet" << std::endl;
+                        std::cout << "info string Threads > 1 not supported yet\n";
                     } else if (name == "MoveOverhead") {
                         OptMoveOverhead = std::stoi(value);
                     } else if (name == "UCI_Chess960") {
@@ -231,7 +235,7 @@ int main() {
              auto bench_end = std::chrono::steady_clock::now();
              long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(bench_end - bench_start).count();
 
-             std::cout << "Bench: " << total_nodes << " nodes " << ms << " ms " << (ms > 0 ? total_nodes * 1000 / ms : 0) << " nps" << std::endl;
+             std::cout << "Bench: " << total_nodes << " nodes " << ms << " ms " << (ms > 0 ? total_nodes * 1000 / ms : 0) << " nps\n";
         }
     }
 
