@@ -490,9 +490,9 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              }
         }
         if (tte.depth >= depth) {
-            if (tte.bound == 1) return tte.score;
-            if (tte.bound == 2 && tte.score <= alpha) return alpha;
-            if (tte.bound == 3 && tte.score >= beta) return tte.score;
+            if (tte.bound() == 1) return tte.score;
+            if (tte.bound() == 2 && tte.score <= alpha) return alpha;
+            if (tte.bound() == 3 && tte.score >= beta) return tte.score;
         }
     }
 
@@ -505,7 +505,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     }
 
     int singular_ext = 0;
-    if (Search::UseSingular && depth >= 6 && tt_move != 0 && tte.bound == 1 && tte.depth >= depth - 1 && excluded_move == 0) {
+    if (Search::UseSingular && depth >= 6 && tt_move != 0 && tte.bound() == 1 && tte.depth >= depth - 1 && excluded_move == 0) {
         int tt_score = tte.score;
         int singular_margin = 60;
         int singular_beta = tt_score - singular_margin;
