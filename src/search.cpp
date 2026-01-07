@@ -137,6 +137,7 @@ class MovePicker {
     int bad_current_idx = 0;
 
     int scores[256];
+    bool is_bad_capture[256]; // Explicit classification
     int bad_scores[256];
 
     uint16_t tt_move;
@@ -145,6 +146,7 @@ class MovePicker {
     int ply;
     int stage;
     bool captures_only;
+    bool skip_bad_captures; // New flag
     int killer_idx = 0;
 
     enum Stage {
@@ -163,7 +165,7 @@ class MovePicker {
 
 public:
     MovePicker(const Position& p, uint16_t tm, int pl, uint16_t pm)
-        : pos(p), tt_move(tm), prev_move(pm), ply(pl), stage(STAGE_TT_MOVE), captures_only(false), killer_idx(0) {
+        : pos(p), tt_move(tm), prev_move(pm), ply(pl), stage(STAGE_TT_MOVE), captures_only(false), skip_bad_captures(false), killer_idx(0) {
         if (ply < MAX_PLY) {
             killers[0] = KillerMoves[ply][0];
             killers[1] = KillerMoves[ply][1];
@@ -172,8 +174,8 @@ public:
         }
     }
 
-    MovePicker(const Position& p, bool caps_only)
-        : pos(p), tt_move(0), prev_move(0), ply(0), stage(STAGE_GEN_CAPTURES), captures_only(caps_only), killer_idx(0) {
+    MovePicker(const Position& p, bool caps_only, bool skip_bad = false)
+        : pos(p), tt_move(0), prev_move(0), ply(0), stage(STAGE_GEN_CAPTURES), captures_only(caps_only), skip_bad_captures(skip_bad), killer_idx(0) {
         killers[0] = killers[1] = 0;
     }
 
@@ -204,8 +206,10 @@ public:
 
             if (see_score >= 0) {
                 scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score;
+                is_bad_capture[i] = false;
             } else {
                 scores[i] = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score;
+                is_bad_capture[i] = true;
             }
         }
     }
@@ -296,18 +300,8 @@ public:
                     bad_captures.count = 0;
                     int good_count = 0;
 
-                    // Iterate current list and split
-                    // We can do this in-place but need to preserve scores.
-                    // We'll iterate and construct new arrangement.
-                    // But scores match indices.
-
-                    // Safe way: use temporary buffer or swap to end.
-                    // Swapping to end logic:
-                    // If Bad, swap to end. Decrement end pointer.
-                    // But we want to extract Bad to separate list to reuse 'list' for Quiets later.
-
                     for (int i = 0; i < list.count; i++) {
-                        if (scores[i] < SCORE_GOOD_CAPTURE_BASE - 100000) { // Bad Capture
+                        if (is_bad_capture[i]) { // Explicit SEE check
                             bad_captures.add(list.moves[i]);
                             bad_scores[bad_captures.count - 1] = scores[i];
                         } else { // Good Capture
@@ -371,6 +365,10 @@ public:
                 }
 
                 case STAGE_BAD_CAPTURES: {
+                    if (skip_bad_captures) { // Optimization
+                         stage = STAGE_FINISHED;
+                         break;
+                    }
                     uint16_t m = pick_best_bad();
                     if (m == 0) {
                         stage = STAGE_FINISHED;
@@ -412,23 +410,16 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
         if (alpha < stand_pat) alpha = stand_pat;
     }
 
-    MovePicker mp(pos, !in_check);
+    // Skip bad captures if not in check
+    MovePicker mp(pos, true, !in_check);
     uint16_t move;
     int moves_searched = 0;
 
     while ((move = mp.next())) {
         if (!in_check) {
-            // We can trust MovePicker to deliver Good Captures first.
-            // Bad captures come later.
-            // But QSearch logic is: if (!in_check && see < 0) continue;
-            // With staged MovePicker, if we are in STAGE_BAD_CAPTURES, see is < 0.
-            // So we can skip bad captures entirely in MovePicker if we wanted.
-            // But we didn't implement logic to skip in MP.
-            // So we check here.
-            // Optimization: if we are iterating bad captures, we know they are bad.
-            // But MovePicker doesn't expose stage.
-            // So we just call see again. It's safe.
-            if (see(pos, move) < 0) continue;
+            // MovePicker now handles bad capture skipping via skip_bad_captures=true
+            // So we don't need to check see() here.
+            // if (see(pos, move) < 0) continue;
         }
 
         if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
@@ -490,9 +481,10 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              }
         }
         if (tte.depth >= depth) {
-            if (tte.bound() == 1) return tte.score;
-            if (tte.bound() == 2 && tte.score <= alpha) return alpha;
-            if (tte.bound() == 3 && tte.score >= beta) return tte.score;
+            int tt_score = score_from_tt(tte.score, ply);
+            if (tte.bound() == 1) return tt_score;
+            if (tte.bound() == 2 && tt_score <= alpha) return alpha;
+            if (tte.bound() == 3 && tt_score >= beta) return tt_score;
         }
     }
 
@@ -506,7 +498,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
     int singular_ext = 0;
     if (Search::UseSingular && depth >= 6 && tt_move != 0 && tte.bound() == 1 && tte.depth >= depth - 1 && excluded_move == 0) {
-        int tt_score = tte.score;
+        int tt_score = score_from_tt(tte.score, ply);
         int singular_margin = 60;
         int singular_beta = tt_score - singular_margin;
         int alt_score = negamax(pos, depth - 2, singular_beta - 1, singular_beta, ply, false, prev_move, tt_move);
@@ -583,7 +575,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              static const int lmp_table[] = {0, 3, 5, 8, 12, 20};
              if (moves_searched >= lmp_table[depth]) {
                   bool is_pv = (beta - alpha > 1);
-                  if (!is_pv) continue;
+                  if (!is_pv) break;
              }
         }
 
@@ -733,7 +725,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     }
 
     int type = (best_score <= original_alpha) ? 2 : (best_score >= beta ? 3 : 1);
-    TTable.store(pos.key(), best_move, best_score, static_eval, depth, type);
+    TTable.store(pos.key(), best_move, score_to_tt(best_score, ply), static_eval, depth, type);
 
     return best_score;
 }
@@ -851,7 +843,7 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
                   << " nodes " << node_count
                   << " time " << ms
                   << " nps " << (ms > 0 ? (node_count * 1000 / ms) : 0)
-                  << " pv " << pv_str << std::endl;
+                  << " pv " << pv_str << "\n";
     }
 
     TTEntry tte;
@@ -861,5 +853,5 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
         MovePicker mp(pos, 0, 0, 0);
         best_move = mp.next();
     }
-    std::cout << "bestmove " << move_to_uci(best_move) << std::endl;
+    std::cout << "bestmove " << move_to_uci(best_move) << "\n" << std::flush;
 }
