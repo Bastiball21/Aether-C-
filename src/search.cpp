@@ -941,6 +941,7 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
 
         auto now = steady_clock::now();
         long long ms = duration_cast<milliseconds>(now - start_time).count();
+        long long us = duration_cast<microseconds>(now - start_time).count();
 
         std::string pv_str = "";
         Position temp_pos = pos;
@@ -975,11 +976,20 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
              pv_keys.push_back(temp_pos.key());
         }
 
+        std::string score_str;
+        if (std::abs(score) > 30000) {
+            int mate_in_moves = (MATE_SCORE - std::abs(score) + 1) / 2;
+            if (score < 0) score_str = "mate -" + std::to_string(mate_in_moves);
+            else score_str = "mate " + std::to_string(mate_in_moves);
+        } else {
+            score_str = "cp " + std::to_string(score);
+        }
+
         std::cout << "info depth " << depth
-                  << " score cp " << score
+                  << " score " << score_str
                   << " nodes " << node_count
                   << " time " << ms
-                  << " nps " << (ms > 0 ? (node_count * 1000 / ms) : 0)
+                  << " nps " << (us > 0 ? (node_count * 1000000 / us) : 0)
                   << " pv " << pv_str << "\n";
     }
 
