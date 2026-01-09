@@ -1,4 +1,4 @@
-#include "search.h"
+#include "worker.h"
 #include "eval.h"
 #include "movegen.h"
 #include "tt.h"
@@ -12,31 +12,19 @@
 
 using namespace std::chrono;
 
-// Global Signals
+// Global Signals/Data
 std::atomic<bool> stop_flag(false);
-long long node_count = 0;
-steady_clock::time_point start_time;
 int64_t allocated_time_limit = 0;
 int64_t nodes_limit_count = 0;
+steady_clock::time_point start_time;
+// int OptThreads = 1; // Defined in main.cpp
 
-// Constants
-const int INFINITY_SCORE = 32000;
-const int MATE_SCORE = 31000;
-
-// LMR Table
+// LMR Table (Static, shared)
 int LMRTable[64][64];
-
-// History Tables
-int History[2][6][64];
-int CaptureHistory[2][6][64][6];
-int16_t ContHistory[2][6][64][6][64];
-uint16_t CounterMove[2][4096];
-int KillerMoves[MAX_PLY][2];
-
-// Constants for History
-const int MAX_HISTORY = 16384;
+bool lmr_init = false;
 
 void init_lmr() {
+    if (lmr_init) return;
     for (int d = 0; d < 64; d++) {
         for (int m = 0; m < 64; m++) {
             if (d < 3 || m < 2) LMRTable[d][m] = 0;
@@ -45,9 +33,10 @@ void init_lmr() {
             }
         }
     }
+    lmr_init = true;
 }
 
-// Options
+// Search Options (Static in Search class, used by Workers)
 bool Search::UseNMP = true;
 bool Search::UseProbCut = true;
 bool Search::UseSingular = true;
@@ -77,38 +66,104 @@ std::string move_to_uci(uint16_t m) {
     return s;
 }
 
-void Search::stop() {
-    stop_flag = true;
+// Constants
+const int INFINITY_SCORE = 32000;
+const int MATE_SCORE = 31000;
+const int MAX_HISTORY = 16384;
+
+// SearchWorker Implementation
+
+SearchWorker::SearchWorker(int id) : thread_id(id), node_count(0), exit_thread(false), searching(false) {
+    clear_history();
 }
 
-long long Search::get_node_count() {
-    return node_count;
+SearchWorker::~SearchWorker() {
+    stop();
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        exit_thread = true;
+    }
+    cv.notify_one();
+    if (worker_thread.joinable()) worker_thread.join();
 }
 
-void Search::clear() {
-    TTable.clear();
+void SearchWorker::start_search(const Position& pos, const SearchLimits& lm) {
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        root_pos = pos;
+        limits = lm;
+        searching = true;
+    }
+
+    // Lazy initialization of thread
+    if (thread_id != 0 && !worker_thread.joinable()) {
+        worker_thread = std::thread(&SearchWorker::search_loop, this);
+    } else if (thread_id != 0) {
+        cv.notify_one();
+    }
+}
+
+void SearchWorker::wait_for_completion() {
+    // Only for workers
+    if (thread_id == 0) return;
+
+    while (searching) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+void SearchWorker::stop() {
+    // Just sets flag? The global stop_flag handles the search loop.
+}
+
+void SearchWorker::search_loop() {
+    // If master (id 0), we don't loop waiting on CV. We run once.
+    if (thread_id == 0) {
+        // Master runs directly
+        node_count = 0;
+        decay_history();
+        iter_deep();
+        searching = false;
+        return;
+    }
+
+    while (true) {
+        std::unique_lock<std::mutex> lk(mutex);
+        cv.wait(lk, [this] { return searching || exit_thread; });
+
+        if (exit_thread) return;
+
+        Position pos = root_pos;
+        // SearchLimits lim = limits; // Unused
+        lk.unlock();
+
+        node_count = 0;
+        decay_history();
+
+        iter_deep();
+
+        lk.lock();
+        searching = false;
+    }
+}
+
+void SearchWorker::clear_history() {
     std::memset(History, 0, sizeof(History));
     std::memset(CaptureHistory, 0, sizeof(CaptureHistory));
     std::memset(ContHistory, 0, sizeof(ContHistory));
     std::memset(CounterMove, 0, sizeof(CounterMove));
     std::memset(KillerMoves, 0, sizeof(KillerMoves));
-    init_lmr();
 }
 
-void Search::clear_for_new_search() {
+void SearchWorker::decay_history() {
     // Decay History
     for (int i = 0; i < 2; ++i) {
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 64; ++k) {
-                History[i][j][k] >>= 2; // Decay by 1/4 (multiply by 0.25) -> No, user said "value = value * 3 / 4 (25% decay) or value >>= 2 (more aggressive)"
-                // Let's stick to "value * 3 / 4" as it is gentler, or "value >>= 2" (div by 4, which is 75% decay? No, x >>= 2 is x / 4. That is 75% reduction.)
-                // User said: "value = value * 3 / 4 (25% decay) or value >>= 2 (more aggressive)."
-                // I will use value = (value * 3) / 4 to follow "25% decay".
                 History[i][j][k] = (History[i][j][k] * 3) / 4;
             }
         }
     }
-
     // Decay CaptureHistory
     for (int i = 0; i < 2; ++i) {
         for (int j = 0; j < 6; ++j) {
@@ -119,7 +174,6 @@ void Search::clear_for_new_search() {
             }
         }
     }
-
     // Decay ContHistory
     for (int i = 0; i < 2; ++i) {
         for (int j = 0; j < 6; ++j) {
@@ -134,34 +188,33 @@ void Search::clear_for_new_search() {
     }
 }
 
-// History Update Helpers
-void Search::update_history(int side, int pt, int to, int bonus) {
+void SearchWorker::update_history(int side, int pt, int to, int bonus) {
     if (side < 0 || side > 1 || pt < 0 || pt > 5 || to < 0 || to > 63) return;
     int& h = History[side][pt][to];
     h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
 }
 
-void Search::update_capture_history(int side, int pt, int to, int captured_pt, int bonus) {
+void SearchWorker::update_capture_history(int side, int pt, int to, int captured_pt, int bonus) {
     if (side < 0 || side > 1 || pt < 0 || pt > 5 || to < 0 || to > 63 || captured_pt < 0 || captured_pt > 5) return;
     int& h = CaptureHistory[side][pt][to][captured_pt];
     h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
 }
 
-void Search::update_continuation(int side, int prev_pt, int prev_to, int pt, int to, int bonus) {
+void SearchWorker::update_continuation(int side, int prev_pt, int prev_to, int pt, int to, int bonus) {
     if (side < 0 || side > 1 || prev_pt < 0 || prev_pt > 5 || prev_to < 0 || prev_to > 63 || pt < 0 || pt > 5 || to < 0 || to > 63) return;
     int16_t& h = ContHistory[side][prev_pt][prev_to][pt][to];
     h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
 }
 
-void Search::update_counter_move(int side, int prev_from, int prev_to, uint16_t move) {
+void SearchWorker::update_counter_move(int side, int prev_from, int prev_to, uint16_t move) {
     if (side < 0 || side > 1 || prev_from < 0 || prev_from > 63 || prev_to < 0 || prev_to > 63) return;
     int key = (prev_from << 6) | prev_to;
     CounterMove[side][key] = move;
 }
 
-void check_limits() {
+void SearchWorker::check_limits() {
     if (stop_flag) return;
-    if (nodes_limit_count > 0 && node_count >= nodes_limit_count) {
+    if (nodes_limit_count > 0 && GlobalPool.get_total_nodes() >= nodes_limit_count) {
         stop_flag = true;
         return;
     }
@@ -174,17 +227,18 @@ void check_limits() {
     }
 }
 
-// Move Picker
+// MovePicker
 class MovePicker {
     const Position& pos;
+    SearchWorker& worker;
     MoveGen::MoveList list;
-    MoveGen::MoveList bad_captures; // To store bad captures without regenerating
+    MoveGen::MoveList bad_captures;
 
     int current_idx = 0;
     int bad_current_idx = 0;
 
     int scores[256];
-    bool is_bad_capture[256]; // Explicit classification
+    bool is_bad_capture[256];
     int bad_scores[256];
 
     uint16_t tt_move;
@@ -193,7 +247,7 @@ class MovePicker {
     int ply;
     int stage;
     bool captures_only;
-    bool skip_bad_captures; // New flag
+    bool skip_bad_captures;
     int killer_idx = 0;
 
     enum Stage {
@@ -211,18 +265,18 @@ class MovePicker {
     static const int SCORE_BAD_CAPTURE_BASE = -200000;
 
 public:
-    MovePicker(const Position& p, uint16_t tm, int pl, uint16_t pm)
-        : pos(p), tt_move(tm), prev_move(pm), ply(pl), stage(STAGE_TT_MOVE), captures_only(false), skip_bad_captures(false), killer_idx(0) {
+    MovePicker(const Position& p, SearchWorker& w, uint16_t tm, int pl, uint16_t pm)
+        : pos(p), worker(w), tt_move(tm), prev_move(pm), ply(pl), stage(STAGE_TT_MOVE), captures_only(false), skip_bad_captures(false), killer_idx(0) {
         if (ply < MAX_PLY) {
-            killers[0] = KillerMoves[ply][0];
-            killers[1] = KillerMoves[ply][1];
+            killers[0] = worker.KillerMoves[ply][0];
+            killers[1] = worker.KillerMoves[ply][1];
         } else {
             killers[0] = killers[1] = 0;
         }
     }
 
-    MovePicker(const Position& p, bool caps_only, bool skip_bad = false)
-        : pos(p), tt_move(0), prev_move(0), ply(0), stage(STAGE_GEN_CAPTURES), captures_only(caps_only), skip_bad_captures(skip_bad), killer_idx(0) {
+    MovePicker(const Position& p, SearchWorker& w, bool caps_only, bool skip_bad = false)
+        : pos(p), worker(w), tt_move(0), prev_move(0), ply(0), stage(STAGE_GEN_CAPTURES), captures_only(caps_only), skip_bad_captures(skip_bad), killer_idx(0) {
         killers[0] = killers[1] = 0;
     }
 
@@ -253,26 +307,17 @@ public:
 
             int capture_history = 0;
             if (attacker != NO_PIECE && victim != NO_PIECE) {
-                // If it's en-passant, victim is a pawn
                 int victim_pt = (flag == 5) ? 0 : (victim % 6);
                 int attacker_pt = attacker % 6;
-                capture_history = CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
-            } else if (flag == 5) { // En passant, but victim might be NO_PIECE in pos.piece_on() because it's empty square
-                 int victim_pt = 0; // Pawn
+                capture_history = worker.CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
+            } else if (flag == 5) {
+                 int victim_pt = 0;
                  int attacker_pt = attacker % 6;
-                 capture_history = CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
-            } else if ((flag & 8)) { // Promotion
-                // Promotion capture handled above? No, promotion capture flag is different or combined?
-                // UCI promo: flag & 8.
-                // If it is a capture, victim != NO_PIECE usually.
-                // If it is a promo without capture? Then score_captures is only called for captures?
-                // generate_captures generates all captures + queen promotions.
-                // Wait, generate_captures generates captures AND promotions.
-                if (victim != NO_PIECE) {
-                    int victim_pt = victim % 6;
-                    int attacker_pt = attacker % 6;
-                    capture_history = CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
-                }
+                 capture_history = worker.CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
+            } else if ((flag & 8) && victim != NO_PIECE) {
+                int victim_pt = victim % 6;
+                int attacker_pt = attacker % 6;
+                capture_history = worker.CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
             }
 
             if (see_score >= 0) {
@@ -301,14 +346,14 @@ public:
 
             int score = 0;
             if (Search::UseHistory) {
-                score = History[pos.side_to_move()][pt][t];
+                score = worker.History[pos.side_to_move()][pt][t];
                 if (prev_pc != NO_PIECE && prev_to != SQ_NONE) {
-                    score += ContHistory[pos.side_to_move()][prev_pc % 6][prev_to][pt][t];
+                    score += worker.ContHistory[pos.side_to_move()][prev_pc % 6][prev_to][pt][t];
                 }
                 if (prev_move != 0) {
                     Square pf = (Square)((prev_move >> 6) & 0x3F);
                     Square pt_sq = (Square)(prev_move & 0x3F);
-                    if (CounterMove[pos.side_to_move()][(pf << 6) | pt_sq] == m) {
+                    if (worker.CounterMove[pos.side_to_move()][(pf << 6) | pt_sq] == m) {
                         score += 2000;
                     }
                 }
@@ -335,7 +380,6 @@ public:
         return 0;
     }
 
-    // Pick best for Bad Captures list
     uint16_t pick_best_bad() {
         if (bad_current_idx >= bad_captures.count) return 0;
         int best_idx = -1;
@@ -355,7 +399,6 @@ public:
     }
 
     uint16_t next() {
-        // if (node_count > 1000000) return 0; // Safety brake
         while (true) {
             switch (stage) {
                 case STAGE_TT_MOVE:
@@ -366,30 +409,25 @@ public:
                 case STAGE_GEN_CAPTURES: {
                     MoveGen::generate_captures(pos, list);
                     score_captures();
-
-                    // Partition into Good (in list) and Bad (in bad_captures)
                     bad_captures.count = 0;
                     int good_count = 0;
-
                     for (int i = 0; i < list.count; i++) {
-                        if (is_bad_capture[i]) { // Explicit SEE check
+                        if (is_bad_capture[i]) {
                             bad_captures.add(list.moves[i]);
                             bad_scores[bad_captures.count - 1] = scores[i];
-                        } else { // Good Capture
+                        } else {
                             list.moves[good_count] = list.moves[i];
                             scores[good_count] = scores[i];
                             good_count++;
                         }
                     }
                     list.count = good_count;
-
                     current_idx = 0;
                     stage = STAGE_GOOD_CAPTURES;
                     break;
                 }
-
                 case STAGE_GOOD_CAPTURES: {
-                    uint16_t m = pick_best(-2000000000); // Pick any from Good list
+                    uint16_t m = pick_best(-2000000000);
                     if (m == 0) {
                         if (captures_only) stage = STAGE_BAD_CAPTURES;
                         else stage = STAGE_KILLERS;
@@ -398,7 +436,6 @@ public:
                     if (m == tt_move) continue;
                     return m;
                 }
-
                 case STAGE_KILLERS:
                     if (killer_idx < 2) {
                         uint16_t m = killers[killer_idx++];
@@ -406,9 +443,7 @@ public:
                             if (MoveGen::is_pseudo_legal(pos, m)) {
                                 int flag = (m >> 12);
                                 bool is_cap = ((flag & 4) || (flag == 5) || (flag & 8));
-                                if (is_cap) {
-                                     continue;
-                                }
+                                if (is_cap) { continue; }
                                 return m;
                             }
                         }
@@ -416,41 +451,27 @@ public:
                     }
                     stage = STAGE_GEN_QUIETS;
                     break;
-
                 case STAGE_GEN_QUIETS:
                     MoveGen::generate_quiets(pos, list);
                     score_quiets();
                     current_idx = 0;
                     stage = STAGE_QUIETS;
                     break;
-
                 case STAGE_QUIETS: {
                     uint16_t m = pick_best(-2000000000);
-                    if (m == 0) {
-                         stage = STAGE_BAD_CAPTURES;
-                         break;
-                    }
+                    if (m == 0) { stage = STAGE_BAD_CAPTURES; break; }
                     if (m == tt_move) continue;
                     if (m == killers[0] || m == killers[1]) continue;
                     return m;
                 }
-
                 case STAGE_BAD_CAPTURES: {
-                    if (skip_bad_captures) { // Optimization
-                         stage = STAGE_FINISHED;
-                         break;
-                    }
+                    if (skip_bad_captures) { stage = STAGE_FINISHED; break; }
                     uint16_t m = pick_best_bad();
-                    if (m == 0) {
-                        stage = STAGE_FINISHED;
-                        break;
-                    }
+                    if (m == 0) { stage = STAGE_FINISHED; break; }
                     if (m == tt_move) continue;
                     if (m == killers[0] || m == killers[1]) continue;
-                    // Already filtered Good Captures out
                     return m;
                 }
-
                 case STAGE_FINISHED:
                     return 0;
             }
@@ -458,14 +479,10 @@ public:
     }
 };
 
-int quiescence(Position& pos, int alpha, int beta, int ply) {
-    if ((node_count & 1023) == 0) check_limits();
+int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
+    if ((node_count & 1023) == 0 && thread_id == 0) check_limits();
     if (stop_flag) return 0;
     node_count++;
-
-#ifndef NDEBUG
-    if ((node_count & 4095) == 0) pos.debug_validate();
-#endif
 
     if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
 
@@ -474,41 +491,27 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
     if (!in_check) {
         int stand_pat = Eval::evaluate_light(pos);
         if (stand_pat >= beta) return beta;
-
         const int DELTA_MARGIN = 975;
         if (stand_pat < alpha - DELTA_MARGIN) return alpha;
-
         if (alpha < stand_pat) alpha = stand_pat;
     }
 
-    // Skip bad captures if not in check
-    MovePicker mp(pos, true, !in_check);
+    MovePicker mp(pos, *this, true, !in_check);
     uint16_t move;
     int moves_searched = 0;
 
     while ((move = mp.next())) {
-        if (!in_check) {
-            // MovePicker now handles bad capture skipping via skip_bad_captures=true
-            // So we don't need to check see() here.
-            // if (see(pos, move) < 0) continue;
-        }
-
         if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
-
         pos.make_move(move);
         if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
             pos.unmake_move(move);
             continue;
         }
-
         moves_searched++;
         TTable.prefetch(pos.key());
-
         int score = -quiescence(pos, -beta, -alpha, ply + 1);
         pos.unmake_move(move);
-
         if (stop_flag) return 0;
-
         if (score >= beta) return beta;
         if (score > alpha) alpha = score;
     }
@@ -516,18 +519,18 @@ int quiescence(Position& pos, int alpha, int beta, int ply) {
     if (in_check && moves_searched == 0) {
         return -MATE_SCORE + ply;
     }
-
     return alpha;
 }
 
-int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move, uint16_t excluded_move) {
-    if ((node_count & 1023) == 0) check_limits();
+int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move, uint16_t excluded_move) {
+    if ((node_count & 1023) == 0 && thread_id == 0) check_limits();
+    // Workers also need to check stop flag regularly!
+    if (thread_id != 0 && (node_count & 1023) == 0 && stop_flag) return 0;
+
     if (stop_flag) return 0;
     node_count++;
 
     if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
-    // Root repetition check handled in search_root or by caller?
-    // Standard negamax handles it for ply > 0.
     if (ply > 0 && (pos.rule50_count() >= 100 || pos.is_repetition())) return 0;
 
     int original_alpha = alpha;
@@ -538,14 +541,12 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
     bool in_check = pos.in_check();
     bool is_pv = (beta - alpha > 1);
-
     if (in_check) depth++;
 
     if (depth <= 0) return quiescence(pos, alpha, beta, ply);
 
     int static_eval = Eval::evaluate(pos);
 
-    // Razoring
     if (!is_pv && !in_check && depth <= 2) {
         int razor_margin = (depth == 1) ? 150 : 250;
         if (static_eval + razor_margin < alpha) {
@@ -592,10 +593,7 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
     }
 
-    // Static eval was moved up for razoring
-    // int static_eval = 0; // Removed
     if (!in_check) {
-        // static_eval = Eval::evaluate(pos); // Already computed
         if (depth <= 3 && static_eval - 120 * depth >= beta) return static_eval;
 
         if (Search::UseProbCut && depth >= 5 && std::abs(beta) < MATE_SCORE - 100) {
@@ -619,23 +617,15 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             }
         }
 
-        // Null Move Pruning
-        // Safeguards: !in_check, pieces > pawns+king, static_eval >= beta
         if (Search::UseNMP && null_allowed && depth >= 3 && static_eval >= beta && !in_check) {
-            // Ensure we have pieces (not just pawns)
-            if (pos.non_pawn_material(pos.side_to_move()) >= 330) { // At least a bishop/knight
+            if (pos.non_pawn_material(pos.side_to_move()) >= 330) {
                 int reduction = 2 + (depth >= 8 ? 1 : 0);
-
                 pos.make_null_move();
                 int score = -negamax(pos, depth - 1 - reduction, -beta, -beta + 1, ply + 1, false, 0, 0);
                 pos.unmake_null_move();
-
                 if (stop_flag) return 0;
                 if (score >= beta) {
                     if (depth >= 6) {
-                         // Verification search disabled to save nodes? Or keep it?
-                         // User said "Optional: add a verification search".
-                         // Current logic has it. Keeping it is safe.
                          int verify_score = negamax(pos, depth - 1, alpha, beta, ply, false, prev_move, 0);
                          if (verify_score >= beta) return beta;
                     } else {
@@ -646,12 +636,11 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
     }
 
-    MovePicker mp(pos, tt_move, ply, prev_move);
+    MovePicker mp(pos, *this, tt_move, ply, prev_move);
     uint16_t move;
     int moves_searched = 0;
     int best_score = -INFINITY_SCORE;
     uint16_t best_move = 0;
-
     uint16_t tried_quiets[512];
     int tried_quiets_cnt = 0;
 
@@ -674,34 +663,16 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              }
         }
 
-        if (!in_check && is_quiet && depth < 6 && static_eval + 150 * depth <= alpha) {
-             continue;
-        }
-
-        // Futility Pruning
+        if (!in_check && is_quiet && depth < 6 && static_eval + 150 * depth <= alpha) continue;
         if (is_quiet && !in_check && !is_pv && depth <= 4) {
              int fut_margin = 100 * depth + 50;
              if (static_eval + fut_margin <= alpha) continue;
         }
 
-        // SEE calculation (S2.1)
-        int see_score = 200000; // default good
+        int see_score = 200000;
         bool is_promo = (move >> 12) & 8;
-
         if (is_cap && !in_check && !is_promo) {
-             // Calculate SEE if relevant for pruning
              if (depth <= 5) see_score = see(pos, move);
-
-             // Pre-move pruning (Safe for depth > 3 thresholds?)
-             // For S2.1 rule: depth <= 3, prune if see < 0 AND !gives_check.
-             // We can't check gives_check yet.
-             // Existing logic:
-             // depth <= 3: if see < 0 continue?
-             // But existing logic didn't check gives_check.
-             // New rule: prune if see < 0 AND !gives_check.
-             // So we must defer pruning until after make_move check.
-
-             // However, for depth 4-5 margin pruning, we usually assume safe?
              if (depth >= 4 && depth <= 5) {
                   int margin = (depth - 1) * -50;
                   if (see_score < margin) continue;
@@ -715,8 +686,6 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
 
         bool gives_check = pos.in_check();
-
-        // Main Search SEE Pruning (S2.1) - Deferred
         if (depth <= 3 && is_cap && !is_promo && !in_check && !gives_check) {
              if (see_score < 0) {
                  pos.unmake_move(move);
@@ -737,11 +706,8 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              }
         }
         if (move == tt_move) ext += singular_ext;
-
-        // Square from_sq = (Square)((move >> 6) & 0x3F); // Unused
         Square to_sq = (Square)(move & 0x3F);
         Piece moved_piece = pos.piece_on(to_sq);
-
         if (ext == 0 && (moved_piece == W_PAWN || moved_piece == B_PAWN)) {
              int r = rank_of(to_sq);
              if (pos.side_to_move() == BLACK && r == RANK_7) ext = 1;
@@ -758,16 +724,13 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                 int d = std::min(depth, 63);
                 int m = std::min(moves_searched, 63);
                 reduction = LMRTable[d][m];
-
                 if (is_quiet) reduction += 1;
                 if (ext > 0) reduction = 0;
                 if ((flag & 4) || (flag == 5) || (flag & 8)) reduction = 0;
                 if (gives_check) reduction = 0;
-
                 if (reduction < 0) reduction = 0;
                 if (reduction > depth - 1) reduction = depth - 1;
             }
-
             score = -negamax(pos, depth - 1 - reduction + ext, -alpha - 1, -alpha, ply + 1, true, move, 0);
             if (score > alpha && reduction > 0) {
                  score = -negamax(pos, depth - 1 + ext, -alpha - 1, -alpha, ply + 1, true, move, 0);
@@ -787,110 +750,69 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
         if (score > alpha) {
             alpha = score;
-
-            // PV/Root Best move update (half bonus)
-            // If alpha < beta (meaning we didn't fail high yet, but we found a new best move)
-            // This is "optional smaller bonus for PV/root best".
-            // Logic: if score > alpha, this move is better than previous best.
-            // If score < beta, it's a PV node update (or root update if at root).
-            // We should apply it here.
-
             if (ply < MAX_PLY) {
                 bool is_capture = ((flag & 4) || (flag == 5) || (flag & 8));
                 int depth_bonus = depth * depth;
                 if (depth_bonus > 400) depth_bonus = 400;
-
-                // PV Bonus (Half)
                 if (score < beta) {
                     if (is_capture) {
-                        // Capture History PV update
                         Piece victim = pos.piece_on(to_sq);
-                        if (flag == 5) victim = (pos.side_to_move() == WHITE) ? B_PAWN : W_PAWN; // Approximate or actual pawn
-
+                        if (flag == 5) victim = (pos.side_to_move() == WHITE) ? B_PAWN : W_PAWN;
                         if (victim != NO_PIECE || (flag == 5)) {
                              int victim_pt = (flag == 5) ? 0 : (victim % 6);
                              int attacker_pt = moved_piece % 6;
-                             Search::update_capture_history(pos.side_to_move(), attacker_pt, to_sq, victim_pt, depth_bonus / 2);
+                             update_capture_history(pos.side_to_move(), attacker_pt, to_sq, victim_pt, depth_bonus / 2);
                         }
-                    } else {
-                        // Quiet History PV update
-                        // User instruction: "Also add the “PV/root best” smaller bonus (do it; it’s worth it and low risk):"
-                        // It implies both quiet and capture? User said "Use it to score captures ... Update on beta cutoff ... Optional smaller bonus for PV/root best."
-                        // It seems focused on Capture History. But "PV/root best" usually applies to all moves.
-                        // However, the context was "Implement Capture History ... Update on beta cutoff ... Optional smaller bonus".
-                        // So I will stick to Capture History PV bonus.
-                        // Wait, user said "Also add the 'PV/root best' smaller bonus... If move becomes best move in PV node or root but doesn't cutoff, apply half bonus"
-                        // Does it apply to quiet history too? "Keep it simple and cheap."
-                        // I will apply it to capture history as requested in that section.
-                        // If I apply to quiet history, I need to check if it's safe.
-                        // Quiet history is usually updated on cutoff.
-                        // I will only update CaptureHistory for now as that was the main task.
                     }
                 }
             }
-
             if (alpha >= beta) {
                 if (ply < MAX_PLY) {
                      bool is_capture = ((flag & 4) || (flag == 5) || (flag & 8));
-
                      int depth_bonus = depth * depth;
                      if (depth_bonus > 400) depth_bonus = 400;
-
                      if (!is_capture) {
                          KillerMoves[ply][1] = KillerMoves[ply][0];
                          KillerMoves[ply][0] = move;
-
                          Square f = (Square)((move >> 6) & 0x3F);
                          Square t = (Square)(move & 0x3F);
                          Piece pc = pos.piece_on(f);
                          int pt = pc % 6;
-
                          if (Search::UseHistory) {
-                             Search::update_history(pos.side_to_move(), pt, t, depth_bonus);
-
+                             update_history(pos.side_to_move(), pt, t, depth_bonus);
                              if (prev_move != 0) {
                                  Square prev_to = (Square)(prev_move & 0x3F);
                                  Piece prev_pc = pos.piece_on(prev_to);
                                  if (prev_pc != NO_PIECE) {
-                                     Search::update_continuation(pos.side_to_move(), prev_pc % 6, prev_to, pt, t, depth_bonus);
+                                     update_continuation(pos.side_to_move(), prev_pc % 6, prev_to, pt, t, depth_bonus);
                                  }
                                  Square prev_from = (Square)((prev_move >> 6) & 0x3F);
-                                 Search::update_counter_move(pos.side_to_move(), prev_from, prev_to, move);
+                                 update_counter_move(pos.side_to_move(), prev_from, prev_to, move);
                              }
-
                              for (int i=0; i<tried_quiets_cnt; i++) {
                                  uint16_t bad_move = tried_quiets[i];
                                  if (bad_move != move) {
                                      Square bf = (Square)((bad_move >> 6) & 0x3F);
                                      Square bt = (Square)(bad_move & 0x3F);
                                      Piece bpc = pos.piece_on(bf);
-                                     Search::update_history(pos.side_to_move(), bpc % 6, bt, -depth_bonus);
+                                     update_history(pos.side_to_move(), bpc % 6, bt, -depth_bonus);
                                      if (prev_move != 0) {
                                          Square prev_to = (Square)(prev_move & 0x3F);
                                          Piece prev_pc = pos.piece_on(prev_to);
                                          if (prev_pc != NO_PIECE) {
-                                             Search::update_continuation(pos.side_to_move(), prev_pc % 6, prev_to, bpc % 6, bt, -depth_bonus);
+                                             update_continuation(pos.side_to_move(), prev_pc % 6, prev_to, bpc % 6, bt, -depth_bonus);
                                          }
                                      }
                                  }
                              }
                          }
                      } else {
-                         // Capture History Cutoff Update
                          Piece victim = pos.piece_on(to_sq);
-                         // Handle En Passant for victim retrieval
-                         // The victim is not on to_sq if En Passant?
-                         // "move" has flags.
-                         if (flag == 5) {
-                             // En passant. Victim is on (to_sq - push_dir).
-                             // But we just need piece type (Pawn).
-                             victim = (pos.side_to_move() == WHITE) ? B_PAWN : W_PAWN;
-                         }
-
+                         if (flag == 5) victim = (pos.side_to_move() == WHITE) ? B_PAWN : W_PAWN;
                          if (victim != NO_PIECE || flag == 5) {
                              int victim_pt = (flag == 5) ? 0 : (victim % 6);
                              int attacker_pt = moved_piece % 6;
-                             Search::update_capture_history(pos.side_to_move(), attacker_pt, to_sq, victim_pt, depth_bonus);
+                             update_capture_history(pos.side_to_move(), attacker_pt, to_sq, victim_pt, depth_bonus);
                          }
                      }
                 }
@@ -910,22 +832,282 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     return best_score;
 }
 
+struct RootMove {
+    uint16_t move;
+    int score;
+};
+
+bool compare_root_moves(const RootMove& a, const RootMove& b) {
+    return a.score > b.score;
+}
+
+void SearchWorker::iter_deep() {
+    int max_depth = limits.depth > 0 ? limits.depth : MAX_PLY;
+    int prev_score = 0;
+    Position& pos = root_pos;
+
+    // Generate Root Moves Once
+    std::vector<RootMove> root_moves;
+    MoveGen::MoveList ml;
+    MoveGen::generate_all(pos, ml);
+    for (int i = 0; i < ml.count; ++i) {
+        uint16_t m = ml.moves[i];
+        pos.make_move(m);
+        bool legal = !pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move());
+        pos.unmake_move(m);
+        if (legal) {
+            root_moves.push_back({m, -INFINITY_SCORE});
+        }
+    }
+
+    TTEntry tte;
+    if (TTable.probe(pos.key(), tte)) {
+        for (auto& rm : root_moves) {
+            if (rm.move == tte.move) {
+                rm.score = INFINITY_SCORE;
+                break;
+            }
+        }
+    }
+    std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
+
+    for (int depth = 1; depth <= max_depth; depth++) {
+        int score = 0;
+
+        // Sort based on previous iteration scores
+        if (depth > 1) {
+            std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
+        }
+
+        int best_score = -INFINITY_SCORE;
+        int alpha = -INFINITY_SCORE;
+        int beta = INFINITY_SCORE;
+
+        bool use_aspiration = (thread_id == 0 && depth >= 2);
+        int delta = 15;
+
+        if (use_aspiration) {
+             alpha = std::max(-INFINITY_SCORE, prev_score - delta);
+             beta = std::min(INFINITY_SCORE, prev_score + delta);
+        }
+
+        while (true) {
+             if (stop_flag) break;
+             best_score = -INFINITY_SCORE;
+
+             for (size_t i = 0; i < root_moves.size(); ++i) {
+                 if (thread_id != 0) {
+                     // thread_id is 1..N. Master is 0.
+                     if ((int)i % OptThreads != thread_id) continue;
+                 }
+
+                 uint16_t move = root_moves[i].move;
+                 pos.make_move(move);
+
+                 int val;
+                 if (i == 0 && thread_id == 0) {
+                     val = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
+                 } else {
+                     val = -negamax(pos, depth - 1, -alpha - 1, -alpha, 1, true, move, 0);
+                     if (val > alpha && val < beta) {
+                         val = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
+                     }
+                 }
+
+                 pos.unmake_move(move);
+                 if (stop_flag) break;
+
+                 root_moves[i].score = val;
+
+                 if (val > best_score) best_score = val;
+                 if (val > alpha) alpha = val;
+                 if (val >= beta && thread_id == 0) break;
+             }
+
+             if (stop_flag) break;
+
+             if (use_aspiration) {
+                 if (best_score <= alpha) {
+                     beta = (alpha + beta) / 2;
+                     alpha = std::max(-INFINITY_SCORE, alpha - delta);
+                     delta = delta + delta / 2;
+                 } else if (best_score >= beta) {
+                     alpha = (alpha + beta) / 2;
+                     beta = std::min(INFINITY_SCORE, beta + delta);
+                     delta = delta + delta / 2;
+                 } else {
+                     score = best_score;
+                     break;
+                 }
+                 if (delta > 2000) {
+                     alpha = -INFINITY_SCORE;
+                     beta = INFINITY_SCORE;
+                     use_aspiration = false;
+                 }
+             } else {
+                 score = best_score;
+                 break;
+             }
+        }
+
+        prev_score = score;
+        if (stop_flag) break;
+
+        // Reporting (Master Only)
+        if (thread_id == 0) {
+            auto now = steady_clock::now();
+            long long ms = duration_cast<milliseconds>(now - start_time).count();
+            long long us = duration_cast<microseconds>(now - start_time).count();
+
+            uint16_t best_move = 0;
+            int best_val = -INFINITY_SCORE;
+            for (const auto& rm : root_moves) {
+                if (rm.score > best_val) {
+                    best_val = rm.score;
+                    best_move = rm.move;
+                }
+            }
+
+            std::string pv_str = "";
+            if (best_move != 0) {
+                 pv_str += move_to_uci(best_move) + " ";
+                 Position temp_pos = pos;
+                 temp_pos.make_move(best_move);
+                 int pv_depth = 0;
+                 std::vector<Key> pv_keys;
+                 pv_keys.push_back(temp_pos.key());
+                 while (pv_depth < depth - 1) {
+                     TTEntry tte;
+                     if (!TTable.probe(temp_pos.key(), tte) || tte.move == 0) break;
+                     MoveGen::MoveList ml;
+                     MoveGen::generate_all(temp_pos, ml);
+                     bool found = false;
+                     for (int i = 0; i < ml.count; ++i) if (ml.moves[i] == tte.move) found = true;
+                     if (!found) break;
+                     temp_pos.make_move(tte.move);
+                     if (temp_pos.is_attacked((Square)Bitboards::lsb(temp_pos.pieces(KING, ~temp_pos.side_to_move())), temp_pos.side_to_move())) {
+                         temp_pos.unmake_move(tte.move);
+                         break;
+                     }
+                     pv_str += move_to_uci(tte.move) + " ";
+                     pv_depth++;
+                     bool cycled = false;
+                     for (Key k : pv_keys) if (k == temp_pos.key()) cycled = true;
+                     if (cycled) break;
+                     pv_keys.push_back(temp_pos.key());
+                 }
+            }
+
+            std::string score_str;
+            if (std::abs(score) > 30000) {
+                int mate_in_moves = (MATE_SCORE - std::abs(score) + 1) / 2;
+                if (score < 0) score_str = "mate -" + std::to_string(mate_in_moves);
+                else score_str = "mate " + std::to_string(mate_in_moves);
+            } else {
+                score_str = "cp " + std::to_string(score);
+            }
+
+            std::cout << "info depth " << depth
+                      << " score " << score_str
+                      << " nodes " << GlobalPool.get_total_nodes()
+                      << " time " << ms
+                      << " nps " << (us > 0 ? (GlobalPool.get_total_nodes() * 1000000LL / us) : 0)
+                      << " pv " << pv_str << "\n";
+
+            TTable.store(pos.key(), best_move, score_to_tt(score, 0), Eval::evaluate(pos), depth, 3);
+        }
+    }
+
+    if (thread_id == 0) {
+        uint16_t best_move = 0;
+        int best_val = -INFINITY_SCORE;
+        for (const auto& rm : root_moves) {
+            if (rm.score > best_val) {
+                best_val = rm.score;
+                best_move = rm.move;
+            }
+        }
+        std::cout << "bestmove " << move_to_uci(best_move) << "\n" << std::flush;
+    }
+}
+
+// ThreadPool Implementation
+
+ThreadPool GlobalPool;
+
+void ThreadPool::init(int thread_count) {
+    // thread_count is Total Threads. Workers = thread_count - 1.
+
+    // Clear existing workers
+    for (auto* w : workers) {
+        delete w;
+    }
+    workers.clear();
+
+    if (master) {
+        delete master;
+        master = nullptr;
+    }
+
+    master = new SearchWorker(0);
+
+    for (int i = 1; i < thread_count; i++) {
+        workers.push_back(new SearchWorker(i));
+    }
+}
+
+void ThreadPool::start_search(const Position& pos, const SearchLimits& limits) {
+    if (master) master->start_search(pos, limits);
+    for (auto* w : workers) {
+        w->start_search(pos, limits);
+    }
+}
+
+void ThreadPool::wait_for_completion() {
+    for (auto* w : workers) {
+        w->wait_for_completion();
+    }
+}
+
+long long ThreadPool::get_total_nodes() const {
+    long long total = 0;
+    if (master) total += master->get_nodes();
+    for (auto* w : workers) {
+        total += w->get_nodes();
+    }
+    return total;
+}
+
+ThreadPool::~ThreadPool() {
+    for (auto* w : workers) {
+        delete w;
+    }
+    if (master) delete master;
+}
+
+// Search Static API
+
 void Search::start(Position& pos, const SearchLimits& limits) {
     static bool init = false;
     if (!init) {
         init_lmr();
         init = true;
     }
-    Search::clear_for_new_search();
-    stop_flag = false;
-    node_count = 0;
-    start_time = steady_clock::now();
-    nodes_limit_count = limits.nodes;
+
+    // Initialize/Resize Pool if OptThreads changed
+    // We check if (Workers + 1) == OptThreads, AND if master is initialized.
+    if (!GlobalPool.master || (int)GlobalPool.workers.size() + 1 != OptThreads) {
+        GlobalPool.init(OptThreads);
+    }
 
     Search::UseNMP = limits.use_nmp;
     Search::UseProbCut = limits.use_probcut;
     Search::UseSingular = limits.use_singular;
     Search::UseHistory = limits.use_history;
+
+    stop_flag = false;
+    start_time = steady_clock::now();
+    nodes_limit_count = limits.nodes;
 
     allocated_time_limit = 0;
     if (!limits.infinite) {
@@ -947,232 +1129,41 @@ void Search::start(Position& pos, const SearchLimits& limits) {
     if (limits.infinite) allocated_time_limit = 0;
 
     TTable.new_search();
-    iter_deep(pos, limits);
+
+    // Start Workers (including Master state init)
+    GlobalPool.start_search(pos, limits);
+
+    // Run Master Search Loop
+    GlobalPool.master->search_loop();
+
+    // Master returned (finished or time up). Signal stop.
+    stop_flag = true;
+
+    // Wait for workers to stop
+    GlobalPool.wait_for_completion();
 }
 
-// Root Move Handling
-struct RootMove {
-    uint16_t move;
-    int score;
-    long long nodes;
-};
-
-// Sort RootMoves: higher score first
-bool compare_root_moves(const RootMove& a, const RootMove& b) {
-    return a.score > b.score;
+void Search::stop() {
+    stop_flag = true;
 }
 
-int search_root(Position& pos, int depth, int alpha, int beta, std::vector<RootMove>& root_moves) {
-    int best_score = -INFINITY_SCORE;
-
-    // Sort root moves if depth > 1 (based on previous scores)
-    // For depth 1, they are usually in generated order or we could sort by SEE/History?
-    // But typically we sort at the *start* of iter_deep loop using prev scores.
-    // Here we just iterate.
-
-    for (size_t i = 0; i < root_moves.size(); ++i) {
-        uint16_t move = root_moves[i].move;
-
-        pos.make_move(move);
-
-        // Root move is always safe? MoveGen::generate_all usually produces pseudo-legal.
-        // We must check legality. (Assuming RootMoves contains only legal moves filtered once)
-        if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
-            pos.unmake_move(move);
-            // Should not happen if we filter legal moves at start
-            continue;
-        }
-
-        int score;
-        if (i == 0) {
-            score = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
-        } else {
-            // PVS
-            score = -negamax(pos, depth - 1, -alpha - 1, -alpha, 1, true, move, 0);
-            if (score > alpha && score < beta) {
-                score = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
-            }
-        }
-
-        pos.unmake_move(move);
-
-        if (stop_flag) return 0;
-
-        root_moves[i].score = score;
-
-        if (score > best_score) {
-            best_score = score;
-        }
-        if (score > alpha) {
-            alpha = score;
-        }
-        // At root we usually don't beta cutoff unless we are in aspiration window logic
-        if (score >= beta) {
-            break;
-        }
+void Search::clear() {
+    TTable.clear();
+    // Use public access via ThreadPool if possible, or friend.
+    // ThreadPool has master and workers public.
+    if (GlobalPool.master) GlobalPool.master->clear_history();
+    for (auto* w : GlobalPool.workers) {
+        w->clear_history();
     }
-    return best_score;
 }
 
-void Search::iter_deep(Position& pos, const SearchLimits& limits) {
-    int max_depth = limits.depth > 0 ? limits.depth : MAX_PLY;
-    int prev_score = 0;
-
-    // Generate Root Moves Once
-    std::vector<RootMove> root_moves;
-    MoveGen::MoveList ml;
-    MoveGen::generate_all(pos, ml);
-    for (int i = 0; i < ml.count; ++i) {
-        uint16_t m = ml.moves[i];
-        // Filter illegal
-        pos.make_move(m);
-        bool legal = !pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move());
-        pos.unmake_move(m);
-        if (legal) {
-            root_moves.push_back({m, -INFINITY_SCORE, 0});
-        }
-    }
-
-    // Initial sort (optional, maybe TT move first)
-    TTEntry tte;
-    if (TTable.probe(pos.key(), tte)) {
-        for (auto& rm : root_moves) {
-            if (rm.move == tte.move) {
-                rm.score = INFINITY_SCORE; // float to top
-                break;
-            }
-        }
-    }
-    std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
-
-    for (int depth = 1; depth <= max_depth; depth++) {
-        int score = 0;
-
-        // Sort based on previous iteration scores
-        std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
-        // Ensure TT move is first if it changed?
-        // Standard is: use sorted order from prev depth.
-        // Also check if new TT entry suggests better move?
-        // Aspiration logic usually keeps PV stable.
-
-        if (depth < 2) {
-             score = search_root(pos, depth, -INFINITY_SCORE, INFINITY_SCORE, root_moves);
-        } else {
-             int delta = 15;
-             int alpha = std::max(-INFINITY_SCORE, prev_score - delta);
-             int beta = std::min(INFINITY_SCORE, prev_score + delta);
-             while (true) {
-                 if (stop_flag) break;
-                 score = search_root(pos, depth, alpha, beta, root_moves);
-
-                 // Sort again? If we fail low/high, scores might be bounds.
-                 // Ideally we sort only between depths.
-
-                 if (score <= alpha) {
-                     beta = (alpha + beta) / 2;
-                     alpha = std::max(-INFINITY_SCORE, alpha - delta);
-                     delta = delta + delta / 2;
-                 } else if (score >= beta) {
-                     alpha = (alpha + beta) / 2;
-                     beta = std::min(INFINITY_SCORE, beta + delta);
-                     delta = delta + delta / 2;
-                 } else {
-                     break;
-                 }
-                 if (delta > 2000) {
-                     alpha = -INFINITY_SCORE;
-                     beta = INFINITY_SCORE;
-                 }
-             }
-        }
-        prev_score = score;
-        if (stop_flag) break;
-
-        auto now = steady_clock::now();
-        long long ms = duration_cast<milliseconds>(now - start_time).count();
-        long long us = duration_cast<microseconds>(now - start_time).count();
-
-        // Construct PV from Root Moves
-        // The first move in root_moves (after sorting by score) is the best move?
-        // Wait, search_root updates root_moves[i].score.
-        // But `stable_sort` was done BEFORE the search.
-        // We need to find the best move in the list based on the *just completed* search scores.
-
-        uint16_t best_move = 0;
-        int best_val = -INFINITY_SCORE;
-        for (const auto& rm : root_moves) {
-            if (rm.score > best_val) {
-                best_val = rm.score;
-                best_move = rm.move;
-            }
-        }
-
-        // PV string
-        std::string pv_str = "";
-        if (best_move != 0) {
-             pv_str += move_to_uci(best_move) + " ";
-             // Append subsequent PV
-             Position temp_pos = pos;
-             temp_pos.make_move(best_move);
-
-             // Extract PV from TT for depth-1
-             int pv_depth = 0;
-             std::vector<Key> pv_keys;
-             pv_keys.push_back(temp_pos.key());
-             while (pv_depth < depth - 1) {
-                 TTEntry tte;
-                 if (!TTable.probe(temp_pos.key(), tte) || tte.move == 0) break;
-                 // Validate
-                 MoveGen::MoveList ml;
-                 MoveGen::generate_all(temp_pos, ml);
-                 bool found = false;
-                 for (int i = 0; i < ml.count; ++i) if (ml.moves[i] == tte.move) found = true;
-                 if (!found) break;
-
-                 // Safety Check
-                 temp_pos.make_move(tte.move);
-                 if (temp_pos.is_attacked((Square)Bitboards::lsb(temp_pos.pieces(KING, ~temp_pos.side_to_move())), temp_pos.side_to_move())) {
-                     temp_pos.unmake_move(tte.move);
-                     break;
-                 }
-                 pv_str += move_to_uci(tte.move) + " ";
-                 pv_depth++;
-
-                 bool cycled = false;
-                 for (Key k : pv_keys) if (k == temp_pos.key()) cycled = true;
-                 if (cycled) break;
-                 pv_keys.push_back(temp_pos.key());
-             }
-        }
-
-        std::string score_str;
-        if (std::abs(score) > 30000) {
-            int mate_in_moves = (MATE_SCORE - std::abs(score) + 1) / 2;
-            if (score < 0) score_str = "mate -" + std::to_string(mate_in_moves);
-            else score_str = "mate " + std::to_string(mate_in_moves);
-        } else {
-            score_str = "cp " + std::to_string(score);
-        }
-
-        std::cout << "info depth " << depth
-                  << " score " << score_str
-                  << " nodes " << node_count
-                  << " time " << ms
-                  << " nps " << (us > 0 ? (node_count * 1000000LL / us) : 0)
-                  << " pv " << pv_str << "\n";
-
-        // Save best move to TT (root)
-        TTable.store(pos.key(), best_move, score_to_tt(score, 0), Eval::evaluate(pos), depth, 3); // Flag 3 (Exact) roughly
-    }
-
-    // Find best
-    uint16_t best_move = 0;
-    int best_val = -INFINITY_SCORE;
-    for (const auto& rm : root_moves) {
-        if (rm.score > best_val) {
-            best_val = rm.score;
-            best_move = rm.move;
-        }
-    }
-    std::cout << "bestmove " << move_to_uci(best_move) << "\n" << std::flush;
+long long Search::get_node_count() {
+    return GlobalPool.get_total_nodes();
 }
+
+// Helpers for Search::* static history updates (removed)
+void Search::update_history(int, int, int, int) {}
+void Search::update_capture_history(int, int, int, int, int) {}
+void Search::update_continuation(int, int, int, int, int, int) {}
+void Search::update_counter_move(int, int, int, uint16_t) {}
+void Search::clear_for_new_search() {}

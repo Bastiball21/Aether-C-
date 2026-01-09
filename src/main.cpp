@@ -132,7 +132,6 @@ int main() {
                         TTable.resize(OptHash);
                     } else if (name == "Threads") {
                         OptThreads = std::stoi(value);
-                        std::cout << "info string Threads > 1 not supported yet\n";
                     } else if (name == "MoveOverhead") {
                         OptMoveOverhead = std::stoi(value);
                     } else if (name == "Contempt") {
