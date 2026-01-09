@@ -244,6 +244,14 @@ int main() {
              long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(bench_end - bench_start).count();
 
              std::cout << "Bench: " << total_nodes << " nodes " << ms << " ms " << (ms > 0 ? total_nodes * 1000 / ms : 0) << " nps\n";
+        } else if (token == "tune") {
+             ss >> token; // "fen" or subcommand
+             if (token == "fen") {
+                 std::string fen = "";
+                 while (ss >> token) fen += token + " ";
+                 pos.set(fen);
+                 Eval::trace_eval(pos);
+             }
         }
     }
 

@@ -165,6 +165,8 @@ namespace Eval {
         entry.passed_pawns[BLACK] = 0;
         entry.pawn_attacks[WHITE] = 0;
         entry.pawn_attacks[BLACK] = 0;
+        entry.passed_front_mask[WHITE] = 0;
+        entry.passed_front_mask[BLACK] = 0;
 
         // Calc Attacks and Passed Pawns
         for (Color c : {WHITE, BLACK}) {
@@ -220,6 +222,11 @@ namespace Eval {
                     Bitboards::set_bit(entry.passed_pawns[c], s);
                     entry.score_mg += PASSED_PAWN_RANK_BONUS_MG[r] * us_sign;
                     entry.score_eg += PASSED_PAWN_RANK_BONUS_EG[r] * us_sign;
+
+                    Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
+                    if (front_s >= 0 && front_s < 64) {
+                        Bitboards::set_bit(entry.passed_front_mask[c], front_s);
+                    }
                 }
             }
 
@@ -386,13 +393,14 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                     }
                 }
 
-                // Blocker Penalty
-                Square front_sq = (us == WHITE) ? (Square)(sq + 8) : (Square)(sq - 8);
-                if (front_sq >= 0 && front_sq < 64 && state.piece_on(front_sq) != NO_PIECE) {
-                     mg += PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
-                     eg += PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
-                }
+                // Blocker Penalty (moved to bitwise below)
             }
+
+            // Passed Pawn Blocker (Bitwise)
+            Bitboard blocked_passed = pawn_entry.passed_front_mask[us] & occ;
+            int blocked_count = Bitboards::count(blocked_passed);
+            mg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
+            eg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
 
             for (int pt = 0; pt < 6; pt++) {
                 Bitboard bb = state.pieces((PieceType)pt, us);
@@ -610,7 +618,17 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                 // Extra penalty if King is on semi-open/open file?
                 // Already handled by file_pen above, but safety score scales with attacks.
 
+                // Scale King Safety by Phase (stronger in MG)
+                // We add a fraction to EG to smooth it out?
+                // Or user said "Scale king safety penalty by phase (stronger in MG, weaker in EG)".
+                // Current: mg -= safety, eg -= 0.
+                // This means at phase 0 (endgame), penalty is 0. At phase 24 (opening), penalty is full.
+                // This fits the requirement.
+                // But user noted "The new king safety is good but can be noisy... No wild evaluation swings".
+                // I will add a small portion to EG to prevent it vanishing completely if phase drops?
+                // eg -= safety_score / 4;
                 mg -= safety_score * us_sign;
+                eg -= (safety_score / 4) * us_sign;
             }
 
             // Pawn Storm / Check penalty?
@@ -688,16 +706,16 @@ Bitboard my_pawns = state.pieces(PAWN, us);
         }
 
         // OCB Scaling (Opposite Colored Bishops)
-        // If we have only bishops and pawns (or just 1 minor each?), and bishops are opposite colors.
-        // Simplified check:
-        // Count pieces.
-        if (state.non_pawn_material(WHITE) == 330 && state.non_pawn_material(BLACK) == 330) { // Approx Bishop Value
-             // Check strict count to be sure it's 1 bishop vs 1 bishop (no rooks/queens/knights)
-             // non_pawn_material sums piece values.
-             // If 330, likely 1 bishop (or many pawns? non_pawn_material excludes pawns).
-             // Assume 330 = 1 Bishop.
+        // Robust check using piece counts (E1.3)
+        // Only bishops + pawns? Or bishops + limited material?
+        // "Apply drawish scaling when queens are off and material is low."
+        if (Bitboards::count(state.pieces(QUEEN)) == 0 &&
+            state.non_pawn_material(WHITE) <= 1000 && state.non_pawn_material(BLACK) <= 1000) {
+
              if (Bitboards::count(state.pieces(BISHOP, WHITE)) == 1 &&
-                 Bitboards::count(state.pieces(BISHOP, BLACK)) == 1) {
+                 Bitboards::count(state.pieces(BISHOP, BLACK)) == 1 &&
+                 Bitboards::count(state.pieces(KNIGHT)) == 0 &&
+                 Bitboards::count(state.pieces(ROOK)) == 0) {
 
                  Square w_b = (Square)Bitboards::lsb(state.pieces(BISHOP, WHITE));
                  Square b_b = (Square)Bitboards::lsb(state.pieces(BISHOP, BLACK));
@@ -740,5 +758,49 @@ Bitboard my_pawns = state.pieces(PAWN, us);
 
     int evaluate(const Position& pos, int alpha, int beta) {
         return evaluate_hce(pos, alpha, beta);
+    }
+
+    void trace_eval(const Position& pos) {
+        // Simplified trace - compute main eval and print components
+        // For tuning we ideally want raw feature counts, but score components work for some tuning methods.
+        // User asked for: static eval, phase, key feature values.
+
+        int mg = 0, eg = 0, phase = 0;
+        PawnEntry pawn_entry = evaluate_pawns(pos);
+        mg += pawn_entry.score_mg;
+        eg += pawn_entry.score_eg;
+
+        // Blockers
+        Bitboard occ = pos.pieces();
+        for (Color c : {WHITE, BLACK}) {
+            int us_sign = (c == WHITE) ? 1 : -1;
+            Bitboard blocked_passed = pawn_entry.passed_front_mask[c] & occ;
+            int blocked_count = Bitboards::count(blocked_passed);
+            mg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
+            eg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
+        }
+
+        // Material/PST
+        for (Color side : {WHITE, BLACK}) {
+            int us_sign = (side == WHITE) ? 1 : -1;
+            for (int pt = 0; pt < 6; pt++) {
+                Bitboard bb = pos.pieces((PieceType)pt, side);
+                int count = Bitboards::count(bb);
+                phase += count * PHASE_WEIGHTS[pt];
+                int base_mg = MG_VALS[pt];
+                int base_eg = EG_VALS[pt];
+                while (bb) {
+                    Square sq = (Square)Bitboards::pop_lsb(bb);
+                    mg += (base_mg + get_pst(pt, sq, side, true)) * us_sign;
+                    eg += (base_eg + get_pst(pt, sq, side, false)) * us_sign;
+                }
+            }
+        }
+
+        int phase_clamped = std::clamp(phase, 0, 24);
+        int final_score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
+
+        std::cout << "trace," << final_score << "," << phase_clamped
+                  << "," << mg << "," << eg << "\n";
     }
 }

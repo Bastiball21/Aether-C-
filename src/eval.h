@@ -12,6 +12,7 @@ namespace Eval {
         int score_eg;
         Bitboard passed_pawns[2];
         Bitboard pawn_attacks[2];
+        Bitboard passed_front_mask[2]; // Squares in front of passed pawns (one rank)
     };
 
     // Constants
@@ -23,6 +24,7 @@ namespace Eval {
     void set_contempt(int c);
     int evaluate(const Position& pos, int alpha = -32000, int beta = 32000);
     int evaluate_light(const Position& pos);
+    void trace_eval(const Position& pos);
 
     // Internal
     PawnEntry evaluate_pawns(const Position& pos);
