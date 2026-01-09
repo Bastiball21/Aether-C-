@@ -216,8 +216,10 @@ namespace Eval {
         int score_perspective = (state.side_to_move() == BLACK) ? -score : score;
 
         const int LAZY_EVAL_MARGIN = 250;
-        if (score_perspective + LAZY_EVAL_MARGIN <= alpha) return (state.side_to_move() == BLACK ? -alpha : alpha);
-        if (score_perspective - LAZY_EVAL_MARGIN >= beta) return (state.side_to_move() == BLACK ? -beta : beta);
+        // Lazy Eval: If rough score (without scaling/tempo) is way off, return early.
+        // We use score_perspective (unscaled, no tempo) for speed.
+        if (score_perspective + LAZY_EVAL_MARGIN <= alpha) return alpha;
+        if (score_perspective - LAZY_EVAL_MARGIN >= beta) return beta;
 
         // Complex Terms
         Bitboard king_rings[2] = {0, 0};
@@ -548,28 +550,34 @@ namespace Eval {
 
         score = (score * scale) / 128;
 
-        // Tempo Bonus
-        if (std::abs(score) < 15000) {
+        // Flip to STM Perspective
+        int stm_score = (state.side_to_move() == BLACK) ? -score : score;
+
+        // Tempo Bonus (STM Perspective)
+        // Applied after flipping to ensure it's always positive for STM
+        if (std::abs(stm_score) < 15000) {
             int tempo = (Params.TEMPO_BONUS * phase_clamped) / 24;
-            if (state.side_to_move() == WHITE) score += tempo;
-            else score -= tempo;
+            stm_score += tempo;
         }
 
-        score_perspective = (state.side_to_move() == BLACK) ? -score : score;
-
         // Apply Contempt
+        // Contempt is usually positive (play for win) or negative (play for draw).
+        // Applied to STM score.
+        // score_perspective = stm_score + contempt logic
+
+        int final_score = stm_score;
         if (GlobalContempt != 0) {
              const int MATE_TH = 30000; // Match search.cpp
-             if (std::abs(score_perspective) < MATE_TH) {
-                 int a = std::abs(score_perspective);
+             if (std::abs(final_score) < MATE_TH) {
+                 int a = std::abs(final_score);
                  if (a < 200) {
                      int t = 200 - a;
-                     score_perspective += (GlobalContempt * t) / 200;
+                     final_score += (GlobalContempt * t) / 200;
                  }
              }
         }
 
-        return score_perspective;
+        return final_score;
     }
 
     int evaluate(const Position& pos, int alpha, int beta) {
@@ -577,12 +585,15 @@ namespace Eval {
     }
 
     void trace_eval(const Position& pos) {
+        // Reuse evaluate() to get full score
+        int final_eval = evaluate(pos);
+
+        // Recompute components for display (simplified)
         int mg = 0, eg = 0, phase = 0;
         PawnEntry pawn_entry = evaluate_pawns(pos);
         mg += pawn_entry.score_mg;
         eg += pawn_entry.score_eg;
 
-        // Blockers
         Bitboard occ = pos.pieces();
         for (Color c : {WHITE, BLACK}) {
             int us_sign = (c == WHITE) ? 1 : -1;
@@ -592,7 +603,6 @@ namespace Eval {
             eg += blocked_count * Params.PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
         }
 
-        // Material/PST
         for (Color side : {WHITE, BLACK}) {
             int us_sign = (side == WHITE) ? 1 : -1;
             for (int pt = 0; pt < 6; pt++) {
@@ -608,11 +618,13 @@ namespace Eval {
                 }
             }
         }
-
         int phase_clamped = std::clamp(phase, 0, 24);
-        int final_score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
 
-        std::cout << "trace," << final_score << "," << phase_clamped
+        // Note: 'final_eval' includes all terms (Eval HCE logic).
+        // 'mg' and 'eg' here are partial (missing many terms).
+        // For debugging, we output what we calculated partially, but use the real eval for the final column.
+
+        std::cout << "trace," << final_eval << "," << phase_clamped
                   << "," << mg << "," << eg << "\n";
     }
 }

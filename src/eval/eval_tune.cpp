@@ -12,7 +12,9 @@
 namespace Eval {
 
     // Helper to parse result from EPD
+    // Returns 1.0 (White Win), 0.0 (Black Win), 0.5 (Draw).
     float parse_result(const std::string& line) {
+        // "1-0" or c9 "1-0"
         if (line.find("1-0") != std::string::npos) return 1.0f;
         if (line.find("0-1") != std::string::npos) return 0.0f;
         if (line.find("1/2-1/2") != std::string::npos) return 0.5f;
@@ -284,7 +286,7 @@ namespace Eval {
         }
 
         // Header
-        outfile << "label,phase,score_mg,score_eg,eval";
+        outfile << "label,stm,phase,eval_stm";
 
         std::vector<std::string> features;
         auto add_n = [&](std::string name) {
@@ -368,7 +370,16 @@ namespace Eval {
             phase = std::clamp(phase, 0, 24);
             double p = (double)phase / 24.0;
 
-            outfile << result << "," << phase << ",0,0," << eval;
+            // Convert result to Side-To-Move perspective
+            // parse_result returns White perspective result.
+            // If STM is Black, result_stm = 1.0 - result.
+            float result_stm = result;
+            if (pos.side_to_move() == BLACK) {
+                result_stm = 1.0f - result;
+            }
+
+            // Output label, stm, phase, eval_stm
+            outfile << result_stm << "," << (pos.side_to_move() == WHITE ? 0 : 1) << "," << phase << "," << eval;
 
             auto out_feat = [&](int white_val, int black_val) {
                 int net = (pos.side_to_move() == WHITE) ? (white_val - black_val) : (black_val - white_val);
