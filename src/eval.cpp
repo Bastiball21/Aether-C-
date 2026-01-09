@@ -30,6 +30,8 @@ namespace Eval {
     const int PASSED_PAWN_BLOCKER_PENALTY_MG = -20;
     const int PASSED_PAWN_BLOCKER_PENALTY_EG = -40;
 
+    const int TEMPO_BONUS = 20; // Scaled by phase
+
     // Contempt
     int GlobalContempt = 0;
 
@@ -705,10 +707,15 @@ Bitboard my_pawns = state.pieces(PAWN, us);
             eg -= (hanging_val / 2) * us_sign;
         }
 
+        // Clamp and Scale (Final calculation)
+        phase_clamped = std::clamp(phase, 0, 24);
+        score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
+
+        // Apply General Scale
+        int scale = get_scale_factor(state, score); // Default 128
+
         // OCB Scaling (Opposite Colored Bishops)
-        // Robust check using piece counts (E1.3)
-        // Only bishops + pawns? Or bishops + limited material?
-        // "Apply drawish scaling when queens are off and material is low."
+        // Apply only if endgame conditions met
         if (Bitboards::count(state.pieces(QUEEN)) == 0 &&
             state.non_pawn_material(WHITE) <= 1000 && state.non_pawn_material(BLACK) <= 1000) {
 
@@ -726,16 +733,21 @@ Bitboard my_pawns = state.pieces(PAWN, us);
 
                  if (w_light != b_light) {
                      // Opposite Colored Bishops with no other pieces.
-                     // Scale down significantly.
-                     score = (score * 64) / 128; // 50%
+                     // Apply drawish scale (e.g., 96/128 = 0.75)
+                     scale = (scale * 96) / 128;
                  }
              }
         }
 
-        // Clamp and Scale again
-        phase_clamped = std::clamp(phase, 0, 24);
-        score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
-        score = (score * get_scale_factor(state, score)) / 128;
+        score = (score * scale) / 128;
+
+        // Tempo Bonus (MG-heavy)
+        // score is White - Black.
+        if (std::abs(score) < 15000) { // Don't apply to huge scores/mates to avoid drift
+            int tempo = (TEMPO_BONUS * phase_clamped) / 24;
+            if (state.side_to_move() == WHITE) score += tempo;
+            else score -= tempo;
+        }
 
         score_perspective = (state.side_to_move() == BLACK) ? -score : score;
 
