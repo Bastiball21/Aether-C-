@@ -23,6 +23,48 @@ namespace Eval {
     const int ROOK_SEMI_OPEN_FILE_BONUS_EG = 10;
     const int PASSED_PAWN_SUPPORTED_BONUS_MG = 10;
     const int PASSED_PAWN_SUPPORTED_BONUS_EG = 20;
+    const int PASSED_PAWN_RANK_BONUS_MG[8] = { 0, 5, 10, 20, 35, 60, 100, 0 };
+    const int PASSED_PAWN_RANK_BONUS_EG[8] = { 0, 10, 20, 40, 60, 100, 150, 0 };
+    const int PASSED_PAWN_CONNECTED_BONUS_MG = 10;
+    const int PASSED_PAWN_CONNECTED_BONUS_EG = 20;
+    const int PASSED_PAWN_BLOCKER_PENALTY_MG = -20;
+    const int PASSED_PAWN_BLOCKER_PENALTY_EG = -40;
+
+    const int TEMPO_BONUS = 20; // Scaled by phase
+
+    // Contempt
+    int GlobalContempt = 0;
+
+    // Piece Activity Constants
+    const int BAD_BISHOP_PENALTY_MG = -10;
+    const int BAD_BISHOP_PENALTY_EG = -10;
+    const int ROOK_ON_SEVENTH_MG = 20;
+    const int ROOK_ON_SEVENTH_EG = 40;
+    const int ROOK_BEHIND_PASSED_MG = 10;
+    const int ROOK_BEHIND_PASSED_EG = 30;
+    const int KNIGHT_OUTPOST_BONUS_MG = 25;
+    const int KNIGHT_OUTPOST_BONUS_EG = 15;
+
+    // Endgame Constants
+    const int KING_EG_ACTIVITY_TABLE[8] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // Placeholder if needed, but using formula is easier
+    // Or just simple Centrality Bonus in EG:
+    // (4 - dist_to_center) * 10
+
+    // King Safety Constants
+    const int KING_ZONE_ATTACK_WEIGHTS[6] = { 0, 0, 2, 2, 3, 5 }; // P, N, B, R, Q
+    const int KING_SAFETY_TABLE[100] = {
+        0,  0,  1,  2,  3,  5,  7,  9, 12, 15,
+       18, 22, 26, 30, 35, 39, 44, 49, 54, 60,
+       66, 72, 78, 84, 91, 98,105,112,120,128,
+      136,144,153,162,171,180,190,200,210,220,
+      231,242,253,264,276,288,300,313,326,339,
+      353,367,381,396,411,426,442,458,474,491,
+      508,526,544,562,581,600,620,640,661,682,
+      704,726,749,772,796,820,845,870,896,922,
+      949,977,1000,1000,1000,1000,1000,1000,1000,1000
+    };
+    const int KING_OPEN_FILE_PENALTY = 20;
+    const int KING_SEMI_OPEN_FILE_PENALTY = 10;
 
     const std::pair<int, int> MOBILITY_BONUS[4] = {
         {0, 6}, // Knight
@@ -125,6 +167,8 @@ namespace Eval {
         entry.passed_pawns[BLACK] = 0;
         entry.pawn_attacks[WHITE] = 0;
         entry.pawn_attacks[BLACK] = 0;
+        entry.passed_front_mask[WHITE] = 0;
+        entry.passed_front_mask[BLACK] = 0;
 
         // Calc Attacks and Passed Pawns
         for (Color c : {WHITE, BLACK}) {
@@ -176,8 +220,31 @@ namespace Eval {
 
                 if (span & them_pawns) passed = false;
 
-                if (passed) Bitboards::set_bit(entry.passed_pawns[c], s);
+                if (passed) {
+                    Bitboards::set_bit(entry.passed_pawns[c], s);
+                    entry.score_mg += PASSED_PAWN_RANK_BONUS_MG[r] * us_sign;
+                    entry.score_eg += PASSED_PAWN_RANK_BONUS_EG[r] * us_sign;
+
+                    Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
+                    if (front_s >= 0 && front_s < 64) {
+                        Bitboards::set_bit(entry.passed_front_mask[c], front_s);
+                    }
+                }
             }
+
+            // Connected Passed Pawns
+            // Pawns that have a friendly passed pawn on adjacent files (rank doesn't strictly matter for "connected" set, usually just file adjacency)
+            // But let's check for side-by-side or protected? User said "Two adjacent passed pawns".
+            // Let's count pawns that have a neighbor in the passed_pawns bitboard.
+            Bitboard passed = entry.passed_pawns[c];
+            // Shift East (<< 1) and West (>> 1)
+            Bitboard east = (passed << 1) & ~Bitboards::FileA;
+            Bitboard west = (passed >> 1) & ~Bitboards::FileH;
+            Bitboard connected = passed & (east | west);
+
+            int conn_cnt = Bitboards::count(connected);
+            entry.score_mg += conn_cnt * PASSED_PAWN_CONNECTED_BONUS_MG * us_sign;
+            entry.score_eg += conn_cnt * PASSED_PAWN_CONNECTED_BONUS_EG * us_sign;
         }
 
         PawnHash[idx] = entry;
@@ -240,6 +307,10 @@ namespace Eval {
         }
     }
 
+    void set_contempt(int c) {
+        GlobalContempt = c;
+    }
+
     int evaluate_hce(const Position& state, int alpha, int beta) {
         int mg = 0;
         int eg = 0;
@@ -286,10 +357,8 @@ namespace Eval {
         }
 
         Bitboard attacks_by_side[2] = {0, 0};
-        int king_attack_weight[2] = {0, 0};
-        int king_attack_count[2] = {0, 0};
-        int ring_attack_counts[2][64]; // Zero init
-        for(int i=0; i<64; i++) { ring_attack_counts[0][i]=0; ring_attack_counts[1][i]=0; }
+        int king_attack_units[2] = {0, 0};
+        int king_attackers_count[2] = {0, 0};
 
         int coordination_score[2] = {0, 0};
 
@@ -311,11 +380,13 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                 eg += BISHOP_PAIR_BONUS_EG * us_sign;
             }
 
-            // Passed Pawn Supported
+            // Passed Pawn Logic
             Bitboard passed = pawn_entry.passed_pawns[us];
             while (passed) {
                 Square sq = (Square)Bitboards::pop_lsb(passed);
                 int rank = rank_of(sq);
+
+                // Supported Bonus
                 if (Bitboards::check_bit(pawn_entry.pawn_attacks[us], sq)) {
                     int bonus_rank_idx = (us == WHITE) ? rank : 7 - rank;
                     if (bonus_rank_idx >= 3) {
@@ -323,7 +394,15 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                         eg += PASSED_PAWN_SUPPORTED_BONUS_EG * us_sign;
                     }
                 }
+
+                // Blocker Penalty (moved to bitwise below)
             }
+
+            // Passed Pawn Blocker (Bitwise)
+            Bitboard blocked_passed = pawn_entry.passed_front_mask[us] & occ;
+            int blocked_count = Bitboards::count(blocked_passed);
+            mg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
+            eg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
 
             for (int pt = 0; pt < 6; pt++) {
                 Bitboard bb = state.pieces((PieceType)pt, us);
@@ -383,10 +462,38 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                             mg -= INACTIVE_PENALTY_MG * us_sign;
                             eg -= INACTIVE_PENALTY_EG * us_sign;
                         }
+
+                        // Bad Bishop: on same color as many pawns
+                        if (pt == BISHOP) {
+                             Bitboard light_sq_mask = 0x55AA55AA55AA55AAULL;
+                             bool bishop_is_light = (Bitboards::check_bit(light_sq_mask, sq));
+                             Bitboard my_pawns_same_color = my_pawns & (bishop_is_light ? light_sq_mask : ~light_sq_mask);
+                             // If more than 3 pawns on same color, penalize
+                             if (Bitboards::count(my_pawns_same_color) >= 3) {
+                                  mg += BAD_BISHOP_PENALTY_MG * us_sign;
+                                  eg += BAD_BISHOP_PENALTY_EG * us_sign;
+                             }
+                        }
+
+                        // Knight Outpost: Rank 4-6, supported by own pawn
+                        if (pt == KNIGHT) {
+                             int r = rank_of(sq);
+                             // White: Ranks 3,4,5 (Index 3,4,5? Ranks 4-6 are indices 3,4,5).
+                             // Black: Ranks 6,5,4 (Indices 4,3,2)
+                             // Let's use relative rank.
+                             int rel_r = (us == WHITE) ? r : 7 - r;
+                             if (rel_r >= 3 && rel_r <= 5) {
+                                  if (Bitboards::check_bit(pawn_entry.pawn_attacks[us], sq)) {
+                                      mg += KNIGHT_OUTPOST_BONUS_MG * us_sign;
+                                      eg += KNIGHT_OUTPOST_BONUS_EG * us_sign;
+                                  }
+                             }
+                        }
                     }
 
                     if (pt == ROOK) {
                         int f = file_of(sq);
+                        int r = rank_of(sq);
                         Bitboard file_mask = (Bitboards::FileA << f);
                         bool my_pawns_on_file = (my_pawns & file_mask);
                         bool enemy_pawns_on_file = (enemy_pawns & file_mask);
@@ -398,6 +505,31 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                             } else {
                                 mg += ROOK_SEMI_OPEN_FILE_BONUS_MG * us_sign;
                                 eg += ROOK_SEMI_OPEN_FILE_BONUS_EG * us_sign;
+                            }
+                        }
+
+                        // Rook on 7th (relative rank 6, 0-indexed)
+                        int rel_r = (us == WHITE) ? r : 7 - r;
+                        if (rel_r == 6) {
+                            // Bonus if attacking enemy pawns or cutting off king?
+                            // Simple version: if enemy king is on rank 7/8 (relative 7) OR enemy has pawns on rank 7 (relative 1)
+                            // For now, flat bonus + condition that there are enemy pawns or king near.
+                            // Simplified: Flat bonus if opponent King is on Rank 7 or 8 (relative 7 or 0 for opponent? No. Opponent King on Back Rank).
+                            // Let's stick to simple "Rook on 7th" bonus usually implies attacking chances.
+                            mg += ROOK_ON_SEVENTH_MG * us_sign;
+                            eg += ROOK_ON_SEVENTH_EG * us_sign;
+                        }
+
+                        // Rook behind passed pawn
+                        Bitboard my_passed_file = (pawn_entry.passed_pawns[us] & file_mask);
+                        if (my_passed_file) {
+                            Square relevant_pawn = (Square)Bitboards::lsb(my_passed_file); // For both, any passed pawn is relevant. lsb is fine.
+
+                            // White: Rook < Pawn (Rook index < Pawn index, as Pawn is further up ranks 2-7)
+                            // Black: Rook > Pawn (Rook index > Pawn index, as Pawn is further down ranks 6-1)
+                            if ((us == WHITE && sq < relevant_pawn) || (us == BLACK && sq > relevant_pawn)) {
+                                mg += ROOK_BEHIND_PASSED_MG * us_sign;
+                                eg += ROOK_BEHIND_PASSED_EG * us_sign;
                             }
                         }
                     }
@@ -417,20 +549,8 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                     if (pt != KING) {
                         Bitboard att_on_ring = attacks & king_rings[them];
                         if (att_on_ring) {
-                            int weight = 0;
-                            if (pt == PAWN) weight = 10;
-                            else if (pt == KNIGHT) weight = 25;
-                            else if (pt == BISHOP) weight = 25;
-                            else if (pt == ROOK) weight = 50;
-                            else if (pt == QUEEN) weight = 75;
-
-                            king_attack_weight[them] += weight;
-                            king_attack_count[them] += 1;
-
-                            while (att_on_ring) {
-                                Square s = (Square)Bitboards::pop_lsb(att_on_ring);
-                                ring_attack_counts[them][s]++;
-                            }
+                            king_attack_units[them] += KING_ZONE_ATTACK_WEIGHTS[pt] * Bitboards::count(att_on_ring);
+                            king_attackers_count[them]++;
                         }
                     }
                 }
@@ -467,54 +587,90 @@ Bitboard my_pawns = state.pieces(PAWN, us);
             int us_sign = (side == WHITE) ? 1 : -1;
             Square k_sq = king_sqs[side];
 
-            int shield_pen = 0;
-            Rank k_rank = rank_of(k_sq);
-            if ((side == WHITE && k_rank < RANK_4) || (side == BLACK && k_rank > RANK_5)) {
-                Bitboard my_pawns = state.pieces(PAWN, side);
-                Bitboard enemy_pawns = state.pieces(PAWN, ~side);
-                File k_file = file_of(k_sq);
-                for (int f_offset = -1; f_offset <= 1; f_offset++) {
-                    int f = k_file + f_offset;
-                    if (f >= 0 && f <= 7) {
-                        Bitboard mask = (Bitboards::FileA << f);
-                        if ((my_pawns & mask) == 0) {
-                            shield_pen += SHIELD_MISSING_PENALTY;
-                            if ((enemy_pawns & mask) == 0) shield_pen += SHIELD_OPEN_FILE_PENALTY;
-                        }
+            // 1. File Safety (Open/Semi-open files)
+            int file_pen = 0;
+            Bitboard my_pawns = state.pieces(PAWN, side);
+            Bitboard enemy_pawns = state.pieces(PAWN, ~side);
+            File k_file = file_of(k_sq);
+
+            // Check file of King and adjacent files
+            for (int f_offset = -1; f_offset <= 1; f_offset++) {
+                int f = k_file + f_offset;
+                if (f >= 0 && f <= 7) {
+                    Bitboard mask = (Bitboards::FileA << f);
+                    bool friendly_pawn = (my_pawns & mask);
+                    bool enemy_pawn = (enemy_pawns & mask);
+
+                    if (!friendly_pawn) {
+                        file_pen += KING_SEMI_OPEN_FILE_PENALTY;
+                        if (!enemy_pawn) file_pen += KING_OPEN_FILE_PENALTY;
                     }
                 }
             }
-            mg += shield_pen * us_sign;
+            mg -= file_pen * us_sign;
 
+            // 2. King Attack Safety
+            if (king_attackers_count[side] >= 2) { // Only if at least 2 attackers
+                int units = king_attack_units[side];
+                // Cap units at 99 for table lookup
+                if (units > 99) units = 99;
+
+                int safety_score = KING_SAFETY_TABLE[units];
+
+                // Extra penalty if King is on semi-open/open file?
+                // Already handled by file_pen above, but safety score scales with attacks.
+
+                // Scale King Safety by Phase (stronger in MG)
+                // We add a fraction to EG to smooth it out?
+                // Or user said "Scale king safety penalty by phase (stronger in MG, weaker in EG)".
+                // Current: mg -= safety, eg -= 0.
+                // This means at phase 0 (endgame), penalty is 0. At phase 24 (opening), penalty is full.
+                // This fits the requirement.
+                // But user noted "The new king safety is good but can be noisy... No wild evaluation swings".
+                // I will add a small portion to EG to prevent it vanishing completely if phase drops?
+                // eg -= safety_score / 4;
+                mg -= safety_score * us_sign;
+                eg -= (safety_score / 4) * us_sign;
+            }
+
+            // Pawn Storm / Check penalty?
+            // Existing logic had "if attacked by pawn". Keeping basic checks.
             if (Bitboards::check_bit(pawn_entry.pawn_attacks[~side], k_sq)) {
                 mg -= 50 * us_sign;
             }
-
-            int danger = king_attack_weight[side];
-            if (king_attack_count[side] >= 2) {
-                danger += king_attack_count[side] * 10;
-            }
-
-            Bitboard ring = king_rings[side];
-            Bitboard undefended = ring & ~attacks_by_side[side];
-            Bitboard attacked = ring & attacks_by_side[~side];
-            Bitboard danger_zone = undefended & attacked;
-            danger += Bitboards::count(danger_zone) * 10;
-
-            int cluster_pen = 0;
-            while (ring) {
-                Square s = (Square)Bitboards::pop_lsb(ring);
-                int c = ring_attack_counts[side][s];
-                if (c >= 2) cluster_pen += (c - 1) * 20;
-            }
-
-            if (danger > 80) mg -= danger * us_sign;
-            mg -= cluster_pen * us_sign;
-            eg -= (cluster_pen / 2) * us_sign;
         }
 
         mg += coordination_score[WHITE] - coordination_score[BLACK];
         eg += (coordination_score[WHITE] - coordination_score[BLACK]) / 2;
+
+        // --- Phase 4: Endgame Knowledge ---
+
+        // King Activity (Endgame Only)
+        // Bonus for King being central in endgame.
+        // We use 'phase' to determine if we are in endgame?
+        // We already accumulate into 'eg', so just add to 'eg'.
+        for (Color side : {WHITE, BLACK}) {
+             int us_sign = (side == WHITE) ? 1 : -1;
+             Square k = king_sqs[side];
+             // Center is between d and e.
+             // File 0..7. Center 3.5.
+             // Dist from 3.5:
+             // 3 (d) -> 0.5. 4 (e) -> 0.5.
+             // 0 (a) -> 3.5.
+             // Let's use simpler logic:
+             // Center files (C,D,E,F) -> good.
+             // Center ranks (3,4,5,6) -> good.
+             // Distance metric: max(abs(f - 3.5), abs(r - 3.5))
+             // Int math: max(abs(2*f - 7), abs(2*r - 7))
+             // Range: 1 (center) to 7 (corner).
+             int f2 = 2 * file_of(k);
+             int r2 = 2 * rank_of(k);
+             int dist = std::max(std::abs(f2 - 7), std::abs(r2 - 7));
+             // dist is 1..7.
+             // Bonus: (7 - dist) * 5
+
+             eg += ((7 - dist) * 5) * us_sign;
+        }
 
         // Hanging Pieces Logic (Simplified port)
         int hanging_val = 0;
@@ -551,15 +707,112 @@ Bitboard my_pawns = state.pieces(PAWN, us);
             eg -= (hanging_val / 2) * us_sign;
         }
 
-        // Clamp and Scale again
+        // Clamp and Scale (Final calculation)
         phase_clamped = std::clamp(phase, 0, 24);
         score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
-        score = (score * get_scale_factor(state, score)) / 128;
 
-        return (state.side_to_move() == BLACK) ? -score : score;
+        // Apply General Scale
+        int scale = get_scale_factor(state, score); // Default 128
+
+        // OCB Scaling (Opposite Colored Bishops)
+        // Apply only if endgame conditions met
+        if (Bitboards::count(state.pieces(QUEEN)) == 0 &&
+            state.non_pawn_material(WHITE) <= 1000 && state.non_pawn_material(BLACK) <= 1000) {
+
+             if (Bitboards::count(state.pieces(BISHOP, WHITE)) == 1 &&
+                 Bitboards::count(state.pieces(BISHOP, BLACK)) == 1 &&
+                 Bitboards::count(state.pieces(KNIGHT)) == 0 &&
+                 Bitboards::count(state.pieces(ROOK)) == 0) {
+
+                 Square w_b = (Square)Bitboards::lsb(state.pieces(BISHOP, WHITE));
+                 Square b_b = (Square)Bitboards::lsb(state.pieces(BISHOP, BLACK));
+
+                 // Check colors
+                 bool w_light = Bitboards::check_bit(0x55AA55AA55AA55AAULL, w_b);
+                 bool b_light = Bitboards::check_bit(0x55AA55AA55AA55AAULL, b_b);
+
+                 if (w_light != b_light) {
+                     // Opposite Colored Bishops with no other pieces.
+                     // Apply drawish scale (e.g., 96/128 = 0.75)
+                     scale = (scale * 96) / 128;
+                 }
+             }
+        }
+
+        score = (score * scale) / 128;
+
+        // Tempo Bonus (MG-heavy)
+        // score is White - Black.
+        if (std::abs(score) < 15000) { // Don't apply to huge scores/mates to avoid drift
+            int tempo = (TEMPO_BONUS * phase_clamped) / 24;
+            if (state.side_to_move() == WHITE) score += tempo;
+            else score -= tempo;
+        }
+
+        score_perspective = (state.side_to_move() == BLACK) ? -score : score;
+
+        // Apply Contempt
+        // Tapered contempt: Full effect at 0 cp, linearly reduces to 0 at |score| >= 200cp.
+        // No effect on mate scores.
+        if (GlobalContempt != 0) {
+             const int MATE_TH = 30000; // Match search.cpp
+             if (std::abs(score_perspective) < MATE_TH) {
+                 int a = std::abs(score_perspective);
+                 if (a < 200) {
+                     int t = 200 - a;
+                     score_perspective += (GlobalContempt * t) / 200;
+                 }
+             }
+        }
+
+        return score_perspective;
     }
 
     int evaluate(const Position& pos, int alpha, int beta) {
         return evaluate_hce(pos, alpha, beta);
+    }
+
+    void trace_eval(const Position& pos) {
+        // Simplified trace - compute main eval and print components
+        // For tuning we ideally want raw feature counts, but score components work for some tuning methods.
+        // User asked for: static eval, phase, key feature values.
+
+        int mg = 0, eg = 0, phase = 0;
+        PawnEntry pawn_entry = evaluate_pawns(pos);
+        mg += pawn_entry.score_mg;
+        eg += pawn_entry.score_eg;
+
+        // Blockers
+        Bitboard occ = pos.pieces();
+        for (Color c : {WHITE, BLACK}) {
+            int us_sign = (c == WHITE) ? 1 : -1;
+            Bitboard blocked_passed = pawn_entry.passed_front_mask[c] & occ;
+            int blocked_count = Bitboards::count(blocked_passed);
+            mg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
+            eg += blocked_count * PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
+        }
+
+        // Material/PST
+        for (Color side : {WHITE, BLACK}) {
+            int us_sign = (side == WHITE) ? 1 : -1;
+            for (int pt = 0; pt < 6; pt++) {
+                Bitboard bb = pos.pieces((PieceType)pt, side);
+                int count = Bitboards::count(bb);
+                phase += count * PHASE_WEIGHTS[pt];
+                int base_mg = MG_VALS[pt];
+                int base_eg = EG_VALS[pt];
+                while (bb) {
+                    Square sq = (Square)Bitboards::pop_lsb(bb);
+                    mg += (base_mg + get_pst(pt, sq, side, true)) * us_sign;
+                    eg += (base_eg + get_pst(pt, sq, side, false)) * us_sign;
+                }
+            }
+        }
+
+        int phase_clamped = std::clamp(phase, 0, 24);
+        int final_score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
+
+        std::cout << "trace," << final_score << "," << phase_clamped
+                  << "," << mg << "," << eg << "\n";
     }
 }

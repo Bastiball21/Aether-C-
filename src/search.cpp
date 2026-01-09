@@ -526,7 +526,9 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     node_count++;
 
     if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
-    if (pos.rule50_count() >= 100 || pos.is_repetition()) return 0;
+    // Root repetition check handled in search_root or by caller?
+    // Standard negamax handles it for ply > 0.
+    if (ply > 0 && (pos.rule50_count() >= 100 || pos.is_repetition())) return 0;
 
     int original_alpha = alpha;
     int mate_val = MATE_SCORE - ply;
@@ -535,10 +537,22 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
     if (alpha >= beta) return alpha;
 
     bool in_check = pos.in_check();
+    bool is_pv = (beta - alpha > 1);
 
     if (in_check) depth++;
 
     if (depth <= 0) return quiescence(pos, alpha, beta, ply);
+
+    int static_eval = Eval::evaluate(pos);
+
+    // Razoring
+    if (!is_pv && !in_check && depth <= 2) {
+        int razor_margin = (depth == 1) ? 150 : 250;
+        if (static_eval + razor_margin < alpha) {
+             int v = quiescence(pos, alpha, beta, ply);
+             if (v < alpha) return alpha;
+        }
+    }
 
     TTEntry tte;
     uint16_t tt_move = 0;
@@ -578,9 +592,10 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
     }
 
-    int static_eval = 0;
+    // Static eval was moved up for razoring
+    // int static_eval = 0; // Removed
     if (!in_check) {
-        static_eval = Eval::evaluate(pos);
+        // static_eval = Eval::evaluate(pos); // Already computed
         if (depth <= 3 && static_eval - 120 * depth >= beta) return static_eval;
 
         if (Search::UseProbCut && depth >= 5 && std::abs(beta) < MATE_SCORE - 100) {
@@ -604,19 +619,28 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
             }
         }
 
-        if (Search::UseNMP && null_allowed && depth >= 3 && static_eval >= beta && (pos.non_pawn_material(pos.side_to_move()) >= 320 + 330)) {
-            int reduction = 2;
-            if (depth >= 7) reduction = 3;
-            pos.make_null_move();
-            int score = -negamax(pos, depth - 1 - reduction, -beta, -beta + 1, ply + 1, false, 0, 0);
-            pos.unmake_null_move();
-            if (stop_flag) return 0;
-            if (score >= beta) {
-                if (depth >= 6) {
-                     int verify_score = negamax(pos, depth - 1, alpha, beta, ply, false, prev_move, 0);
-                     if (verify_score >= beta) return beta;
-                } else {
-                     return beta;
+        // Null Move Pruning
+        // Safeguards: !in_check, pieces > pawns+king, static_eval >= beta
+        if (Search::UseNMP && null_allowed && depth >= 3 && static_eval >= beta && !in_check) {
+            // Ensure we have pieces (not just pawns)
+            if (pos.non_pawn_material(pos.side_to_move()) >= 330) { // At least a bishop/knight
+                int reduction = 2 + (depth >= 8 ? 1 : 0);
+
+                pos.make_null_move();
+                int score = -negamax(pos, depth - 1 - reduction, -beta, -beta + 1, ply + 1, false, 0, 0);
+                pos.unmake_null_move();
+
+                if (stop_flag) return 0;
+                if (score >= beta) {
+                    if (depth >= 6) {
+                         // Verification search disabled to save nodes? Or keep it?
+                         // User said "Optional: add a verification search".
+                         // Current logic has it. Keeping it is safe.
+                         int verify_score = negamax(pos, depth - 1, alpha, beta, ply, false, prev_move, 0);
+                         if (verify_score >= beta) return beta;
+                    } else {
+                         return beta;
+                    }
                 }
             }
         }
@@ -654,22 +678,34 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              continue;
         }
 
-        if (depth == 1 && !in_check && is_quiet) {
-             int fut_margin = 150;
+        // Futility Pruning
+        if (is_quiet && !in_check && !is_pv && depth <= 4) {
+             int fut_margin = 100 * depth + 50;
              if (static_eval + fut_margin <= alpha) continue;
         }
 
-        if (is_cap && !in_check) {
-            bool is_promo = (move >> 12) & 8;
+        // SEE calculation (S2.1)
+        int see_score = 200000; // default good
+        bool is_promo = (move >> 12) & 8;
 
-            if (!is_promo) {
-                if (depth <= 3) {
-                     if (see(pos, move) < 0) continue;
-                } else if (depth <= 5) {
-                     int margin = (depth - 1) * -50;
-                     if (see(pos, move) < margin) continue;
-                }
-            }
+        if (is_cap && !in_check && !is_promo) {
+             // Calculate SEE if relevant for pruning
+             if (depth <= 5) see_score = see(pos, move);
+
+             // Pre-move pruning (Safe for depth > 3 thresholds?)
+             // For S2.1 rule: depth <= 3, prune if see < 0 AND !gives_check.
+             // We can't check gives_check yet.
+             // Existing logic:
+             // depth <= 3: if see < 0 continue?
+             // But existing logic didn't check gives_check.
+             // New rule: prune if see < 0 AND !gives_check.
+             // So we must defer pruning until after make_move check.
+
+             // However, for depth 4-5 margin pruning, we usually assume safe?
+             if (depth >= 4 && depth <= 5) {
+                  int margin = (depth - 1) * -50;
+                  if (see_score < margin) continue;
+             }
         }
 
         pos.make_move(move);
@@ -679,6 +715,14 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
         }
 
         bool gives_check = pos.in_check();
+
+        // Main Search SEE Pruning (S2.1) - Deferred
+        if (depth <= 3 && is_cap && !is_promo && !in_check && !gives_check) {
+             if (see_score < 0) {
+                 pos.unmake_move(move);
+                 continue;
+             }
+        }
 
         moves_searched++;
         TTable.prefetch(pos.key());
@@ -906,31 +950,136 @@ void Search::start(Position& pos, const SearchLimits& limits) {
     iter_deep(pos, limits);
 }
 
+// Root Move Handling
+struct RootMove {
+    uint16_t move;
+    int score;
+    long long nodes;
+};
+
+// Sort RootMoves: higher score first
+bool compare_root_moves(const RootMove& a, const RootMove& b) {
+    return a.score > b.score;
+}
+
+int search_root(Position& pos, int depth, int alpha, int beta, std::vector<RootMove>& root_moves) {
+    int best_score = -INFINITY_SCORE;
+
+    // Sort root moves if depth > 1 (based on previous scores)
+    // For depth 1, they are usually in generated order or we could sort by SEE/History?
+    // But typically we sort at the *start* of iter_deep loop using prev scores.
+    // Here we just iterate.
+
+    for (size_t i = 0; i < root_moves.size(); ++i) {
+        uint16_t move = root_moves[i].move;
+
+        pos.make_move(move);
+
+        // Root move is always safe? MoveGen::generate_all usually produces pseudo-legal.
+        // We must check legality. (Assuming RootMoves contains only legal moves filtered once)
+        if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
+            pos.unmake_move(move);
+            // Should not happen if we filter legal moves at start
+            continue;
+        }
+
+        int score;
+        if (i == 0) {
+            score = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
+        } else {
+            // PVS
+            score = -negamax(pos, depth - 1, -alpha - 1, -alpha, 1, true, move, 0);
+            if (score > alpha && score < beta) {
+                score = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
+            }
+        }
+
+        pos.unmake_move(move);
+
+        if (stop_flag) return 0;
+
+        root_moves[i].score = score;
+
+        if (score > best_score) {
+            best_score = score;
+        }
+        if (score > alpha) {
+            alpha = score;
+        }
+        // At root we usually don't beta cutoff unless we are in aspiration window logic
+        if (score >= beta) {
+            break;
+        }
+    }
+    return best_score;
+}
+
 void Search::iter_deep(Position& pos, const SearchLimits& limits) {
     int max_depth = limits.depth > 0 ? limits.depth : MAX_PLY;
     int prev_score = 0;
 
+    // Generate Root Moves Once
+    std::vector<RootMove> root_moves;
+    MoveGen::MoveList ml;
+    MoveGen::generate_all(pos, ml);
+    for (int i = 0; i < ml.count; ++i) {
+        uint16_t m = ml.moves[i];
+        // Filter illegal
+        pos.make_move(m);
+        bool legal = !pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move());
+        pos.unmake_move(m);
+        if (legal) {
+            root_moves.push_back({m, -INFINITY_SCORE, 0});
+        }
+    }
+
+    // Initial sort (optional, maybe TT move first)
+    TTEntry tte;
+    if (TTable.probe(pos.key(), tte)) {
+        for (auto& rm : root_moves) {
+            if (rm.move == tte.move) {
+                rm.score = INFINITY_SCORE; // float to top
+                break;
+            }
+        }
+    }
+    std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
+
     for (int depth = 1; depth <= max_depth; depth++) {
         int score = 0;
+
+        // Sort based on previous iteration scores
+        std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
+        // Ensure TT move is first if it changed?
+        // Standard is: use sorted order from prev depth.
+        // Also check if new TT entry suggests better move?
+        // Aspiration logic usually keeps PV stable.
+
         if (depth < 2) {
-             score = negamax(pos, depth, -INFINITY_SCORE, INFINITY_SCORE, 0, true, 0, 0);
+             score = search_root(pos, depth, -INFINITY_SCORE, INFINITY_SCORE, root_moves);
         } else {
-             int delta = 25;
+             int delta = 15;
              int alpha = std::max(-INFINITY_SCORE, prev_score - delta);
              int beta = std::min(INFINITY_SCORE, prev_score + delta);
              while (true) {
                  if (stop_flag) break;
-                 score = negamax(pos, depth, alpha, beta, 0, true, 0, 0);
+                 score = search_root(pos, depth, alpha, beta, root_moves);
+
+                 // Sort again? If we fail low/high, scores might be bounds.
+                 // Ideally we sort only between depths.
+
                  if (score <= alpha) {
+                     beta = (alpha + beta) / 2;
                      alpha = std::max(-INFINITY_SCORE, alpha - delta);
-                     delta *= 2;
+                     delta = delta + delta / 2;
                  } else if (score >= beta) {
+                     alpha = (alpha + beta) / 2;
                      beta = std::min(INFINITY_SCORE, beta + delta);
-                     delta *= 2;
+                     delta = delta + delta / 2;
                  } else {
                      break;
                  }
-                 if (delta > 400) {
+                 if (delta > 2000) {
                      alpha = -INFINITY_SCORE;
                      beta = INFINITY_SCORE;
                  }
@@ -941,54 +1090,89 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
 
         auto now = steady_clock::now();
         long long ms = duration_cast<milliseconds>(now - start_time).count();
+        long long us = duration_cast<microseconds>(now - start_time).count();
 
+        // Construct PV from Root Moves
+        // The first move in root_moves (after sorting by score) is the best move?
+        // Wait, search_root updates root_moves[i].score.
+        // But `stable_sort` was done BEFORE the search.
+        // We need to find the best move in the list based on the *just completed* search scores.
+
+        uint16_t best_move = 0;
+        int best_val = -INFINITY_SCORE;
+        for (const auto& rm : root_moves) {
+            if (rm.score > best_val) {
+                best_val = rm.score;
+                best_move = rm.move;
+            }
+        }
+
+        // PV string
         std::string pv_str = "";
-        Position temp_pos = pos;
-        int pv_depth = 0;
-        std::vector<Key> pv_keys;
-        pv_keys.push_back(temp_pos.key());
-        while (pv_depth < depth) {
-             TTEntry tte;
-             if (!TTable.probe(temp_pos.key(), tte) || tte.move == 0) break;
+        if (best_move != 0) {
+             pv_str += move_to_uci(best_move) + " ";
+             // Append subsequent PV
+             Position temp_pos = pos;
+             temp_pos.make_move(best_move);
 
-             MoveGen::MoveList ml;
-             MoveGen::generate_all(temp_pos, ml);
-             bool found = false;
-             for (int i = 0; i < ml.count; ++i) {
-                 if (ml.moves[i] == tte.move) { found = true; break; }
-             }
-             if (!found) break;
-
-             temp_pos.make_move(tte.move);
-             Color us = (Color)(temp_pos.side_to_move() ^ 1);
-             if (temp_pos.is_attacked((Square)Bitboards::lsb(temp_pos.pieces(KING, us)), (Color)(us ^ 1))) {
-                 temp_pos.unmake_move(tte.move);
-                 break;
-             }
-
-             pv_str += move_to_uci(tte.move) + " ";
-             pv_depth++;
-
-             bool cycled = false;
-             for (Key k : pv_keys) if (k == temp_pos.key()) { cycled = true; break; }
-             if (cycled) break;
+             // Extract PV from TT for depth-1
+             int pv_depth = 0;
+             std::vector<Key> pv_keys;
              pv_keys.push_back(temp_pos.key());
+             while (pv_depth < depth - 1) {
+                 TTEntry tte;
+                 if (!TTable.probe(temp_pos.key(), tte) || tte.move == 0) break;
+                 // Validate
+                 MoveGen::MoveList ml;
+                 MoveGen::generate_all(temp_pos, ml);
+                 bool found = false;
+                 for (int i = 0; i < ml.count; ++i) if (ml.moves[i] == tte.move) found = true;
+                 if (!found) break;
+
+                 // Safety Check
+                 temp_pos.make_move(tte.move);
+                 if (temp_pos.is_attacked((Square)Bitboards::lsb(temp_pos.pieces(KING, ~temp_pos.side_to_move())), temp_pos.side_to_move())) {
+                     temp_pos.unmake_move(tte.move);
+                     break;
+                 }
+                 pv_str += move_to_uci(tte.move) + " ";
+                 pv_depth++;
+
+                 bool cycled = false;
+                 for (Key k : pv_keys) if (k == temp_pos.key()) cycled = true;
+                 if (cycled) break;
+                 pv_keys.push_back(temp_pos.key());
+             }
+        }
+
+        std::string score_str;
+        if (std::abs(score) > 30000) {
+            int mate_in_moves = (MATE_SCORE - std::abs(score) + 1) / 2;
+            if (score < 0) score_str = "mate -" + std::to_string(mate_in_moves);
+            else score_str = "mate " + std::to_string(mate_in_moves);
+        } else {
+            score_str = "cp " + std::to_string(score);
         }
 
         std::cout << "info depth " << depth
-                  << " score cp " << score
+                  << " score " << score_str
                   << " nodes " << node_count
                   << " time " << ms
-                  << " nps " << (ms > 0 ? (node_count * 1000 / ms) : 0)
+                  << " nps " << (us > 0 ? (node_count * 1000000LL / us) : 0)
                   << " pv " << pv_str << "\n";
+
+        // Save best move to TT (root)
+        TTable.store(pos.key(), best_move, score_to_tt(score, 0), Eval::evaluate(pos), depth, 3); // Flag 3 (Exact) roughly
     }
 
-    TTEntry tte;
+    // Find best
     uint16_t best_move = 0;
-    if (TTable.probe(pos.key(), tte)) best_move = tte.move;
-    if (best_move == 0) {
-        MovePicker mp(pos, 0, 0, 0);
-        best_move = mp.next();
+    int best_val = -INFINITY_SCORE;
+    for (const auto& rm : root_moves) {
+        if (rm.score > best_val) {
+            best_val = rm.score;
+            best_move = rm.move;
+        }
     }
     std::cout << "bestmove " << move_to_uci(best_move) << "\n" << std::flush;
 }
