@@ -23,6 +23,28 @@ namespace Eval {
     const int ROOK_SEMI_OPEN_FILE_BONUS_EG = 10;
     const int PASSED_PAWN_SUPPORTED_BONUS_MG = 10;
     const int PASSED_PAWN_SUPPORTED_BONUS_EG = 20;
+    const int PASSED_PAWN_RANK_BONUS_MG[8] = { 0, 5, 10, 20, 35, 60, 100, 0 };
+    const int PASSED_PAWN_RANK_BONUS_EG[8] = { 0, 10, 20, 40, 60, 100, 150, 0 };
+    const int PASSED_PAWN_CONNECTED_BONUS_MG = 10;
+    const int PASSED_PAWN_CONNECTED_BONUS_EG = 20;
+    const int PASSED_PAWN_BLOCKER_PENALTY_MG = -20;
+    const int PASSED_PAWN_BLOCKER_PENALTY_EG = -40;
+
+    // King Safety Constants
+    const int KING_ZONE_ATTACK_WEIGHTS[6] = { 0, 0, 2, 2, 3, 5 }; // P, N, B, R, Q
+    const int KING_SAFETY_TABLE[100] = {
+        0,  0,  1,  2,  3,  5,  7,  9, 12, 15,
+       18, 22, 26, 30, 35, 39, 44, 49, 54, 60,
+       66, 72, 78, 84, 91, 98,105,112,120,128,
+      136,144,153,162,171,180,190,200,210,220,
+      231,242,253,264,276,288,300,313,326,339,
+      353,367,381,396,411,426,442,458,474,491,
+      508,526,544,562,581,600,620,640,661,682,
+      704,726,749,772,796,820,845,870,896,922,
+      949,977,1000,1000,1000,1000,1000,1000,1000,1000
+    };
+    const int KING_OPEN_FILE_PENALTY = 20;
+    const int KING_SEMI_OPEN_FILE_PENALTY = 10;
 
     const std::pair<int, int> MOBILITY_BONUS[4] = {
         {0, 6}, // Knight
@@ -176,8 +198,26 @@ namespace Eval {
 
                 if (span & them_pawns) passed = false;
 
-                if (passed) Bitboards::set_bit(entry.passed_pawns[c], s);
+                if (passed) {
+                    Bitboards::set_bit(entry.passed_pawns[c], s);
+                    entry.score_mg += PASSED_PAWN_RANK_BONUS_MG[r] * us_sign;
+                    entry.score_eg += PASSED_PAWN_RANK_BONUS_EG[r] * us_sign;
+                }
             }
+
+            // Connected Passed Pawns
+            // Pawns that have a friendly passed pawn on adjacent files (rank doesn't strictly matter for "connected" set, usually just file adjacency)
+            // But let's check for side-by-side or protected? User said "Two adjacent passed pawns".
+            // Let's count pawns that have a neighbor in the passed_pawns bitboard.
+            Bitboard passed = entry.passed_pawns[c];
+            // Shift East (<< 1) and West (>> 1)
+            Bitboard east = (passed << 1) & ~Bitboards::FileA;
+            Bitboard west = (passed >> 1) & ~Bitboards::FileH;
+            Bitboard connected = passed & (east | west);
+
+            int conn_cnt = Bitboards::count(connected);
+            entry.score_mg += conn_cnt * PASSED_PAWN_CONNECTED_BONUS_MG * us_sign;
+            entry.score_eg += conn_cnt * PASSED_PAWN_CONNECTED_BONUS_EG * us_sign;
         }
 
         PawnHash[idx] = entry;
@@ -286,10 +326,8 @@ namespace Eval {
         }
 
         Bitboard attacks_by_side[2] = {0, 0};
-        int king_attack_weight[2] = {0, 0};
-        int king_attack_count[2] = {0, 0};
-        int ring_attack_counts[2][64]; // Zero init
-        for(int i=0; i<64; i++) { ring_attack_counts[0][i]=0; ring_attack_counts[1][i]=0; }
+        int king_attack_units[2] = {0, 0};
+        int king_attackers_count[2] = {0, 0};
 
         int coordination_score[2] = {0, 0};
 
@@ -311,17 +349,26 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                 eg += BISHOP_PAIR_BONUS_EG * us_sign;
             }
 
-            // Passed Pawn Supported
+            // Passed Pawn Logic
             Bitboard passed = pawn_entry.passed_pawns[us];
             while (passed) {
                 Square sq = (Square)Bitboards::pop_lsb(passed);
                 int rank = rank_of(sq);
+
+                // Supported Bonus
                 if (Bitboards::check_bit(pawn_entry.pawn_attacks[us], sq)) {
                     int bonus_rank_idx = (us == WHITE) ? rank : 7 - rank;
                     if (bonus_rank_idx >= 3) {
                         mg += PASSED_PAWN_SUPPORTED_BONUS_MG * us_sign;
                         eg += PASSED_PAWN_SUPPORTED_BONUS_EG * us_sign;
                     }
+                }
+
+                // Blocker Penalty
+                Square front_sq = (us == WHITE) ? (Square)(sq + 8) : (Square)(sq - 8);
+                if (front_sq >= 0 && front_sq < 64 && state.piece_on(front_sq) != NO_PIECE) {
+                     mg += PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
+                     eg += PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
                 }
             }
 
@@ -417,20 +464,8 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                     if (pt != KING) {
                         Bitboard att_on_ring = attacks & king_rings[them];
                         if (att_on_ring) {
-                            int weight = 0;
-                            if (pt == PAWN) weight = 10;
-                            else if (pt == KNIGHT) weight = 25;
-                            else if (pt == BISHOP) weight = 25;
-                            else if (pt == ROOK) weight = 50;
-                            else if (pt == QUEEN) weight = 75;
-
-                            king_attack_weight[them] += weight;
-                            king_attack_count[them] += 1;
-
-                            while (att_on_ring) {
-                                Square s = (Square)Bitboards::pop_lsb(att_on_ring);
-                                ring_attack_counts[them][s]++;
-                            }
+                            king_attack_units[them] += KING_ZONE_ATTACK_WEIGHTS[pt] * Bitboards::count(att_on_ring);
+                            king_attackers_count[them]++;
                         }
                     }
                 }
@@ -467,50 +502,47 @@ Bitboard my_pawns = state.pieces(PAWN, us);
             int us_sign = (side == WHITE) ? 1 : -1;
             Square k_sq = king_sqs[side];
 
-            int shield_pen = 0;
-            Rank k_rank = rank_of(k_sq);
-            if ((side == WHITE && k_rank < RANK_4) || (side == BLACK && k_rank > RANK_5)) {
-                Bitboard my_pawns = state.pieces(PAWN, side);
-                Bitboard enemy_pawns = state.pieces(PAWN, ~side);
-                File k_file = file_of(k_sq);
-                for (int f_offset = -1; f_offset <= 1; f_offset++) {
-                    int f = k_file + f_offset;
-                    if (f >= 0 && f <= 7) {
-                        Bitboard mask = (Bitboards::FileA << f);
-                        if ((my_pawns & mask) == 0) {
-                            shield_pen += SHIELD_MISSING_PENALTY;
-                            if ((enemy_pawns & mask) == 0) shield_pen += SHIELD_OPEN_FILE_PENALTY;
-                        }
+            // 1. File Safety (Open/Semi-open files)
+            int file_pen = 0;
+            Bitboard my_pawns = state.pieces(PAWN, side);
+            Bitboard enemy_pawns = state.pieces(PAWN, ~side);
+            File k_file = file_of(k_sq);
+
+            // Check file of King and adjacent files
+            for (int f_offset = -1; f_offset <= 1; f_offset++) {
+                int f = k_file + f_offset;
+                if (f >= 0 && f <= 7) {
+                    Bitboard mask = (Bitboards::FileA << f);
+                    bool friendly_pawn = (my_pawns & mask);
+                    bool enemy_pawn = (enemy_pawns & mask);
+
+                    if (!friendly_pawn) {
+                        file_pen += KING_SEMI_OPEN_FILE_PENALTY;
+                        if (!enemy_pawn) file_pen += KING_OPEN_FILE_PENALTY;
                     }
                 }
             }
-            mg += shield_pen * us_sign;
+            mg -= file_pen * us_sign;
 
+            // 2. King Attack Safety
+            if (king_attackers_count[side] >= 2) { // Only if at least 2 attackers
+                int units = king_attack_units[side];
+                // Cap units at 99 for table lookup
+                if (units > 99) units = 99;
+
+                int safety_score = KING_SAFETY_TABLE[units];
+
+                // Extra penalty if King is on semi-open/open file?
+                // Already handled by file_pen above, but safety score scales with attacks.
+
+                mg -= safety_score * us_sign;
+            }
+
+            // Pawn Storm / Check penalty?
+            // Existing logic had "if attacked by pawn". Keeping basic checks.
             if (Bitboards::check_bit(pawn_entry.pawn_attacks[~side], k_sq)) {
                 mg -= 50 * us_sign;
             }
-
-            int danger = king_attack_weight[side];
-            if (king_attack_count[side] >= 2) {
-                danger += king_attack_count[side] * 10;
-            }
-
-            Bitboard ring = king_rings[side];
-            Bitboard undefended = ring & ~attacks_by_side[side];
-            Bitboard attacked = ring & attacks_by_side[~side];
-            Bitboard danger_zone = undefended & attacked;
-            danger += Bitboards::count(danger_zone) * 10;
-
-            int cluster_pen = 0;
-            while (ring) {
-                Square s = (Square)Bitboards::pop_lsb(ring);
-                int c = ring_attack_counts[side][s];
-                if (c >= 2) cluster_pen += (c - 1) * 20;
-            }
-
-            if (danger > 80) mg -= danger * us_sign;
-            mg -= cluster_pen * us_sign;
-            eg -= (cluster_pen / 2) * us_sign;
         }
 
         mg += coordination_score[WHITE] - coordination_score[BLACK];
