@@ -1158,7 +1158,7 @@ void Search::iter_deep(Position& pos, const SearchLimits& limits) {
                   << " score " << score_str
                   << " nodes " << node_count
                   << " time " << ms
-                  << " nps " << (us > 0 ? (node_count * 1000000 / us) : 0)
+                  << " nps " << (us > 0 ? (node_count * 1000000LL / us) : 0)
                   << " pv " << pv_str << "\n";
 
         // Save best move to TT (root)
