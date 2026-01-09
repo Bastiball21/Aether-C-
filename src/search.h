@@ -10,6 +10,8 @@
 struct Move;
 namespace TT { class TranspositionTable; }
 
+extern int OptThreads; // Global thread count option
+
 struct SearchLimits {
     int depth = 0;
     int64_t nodes = 0;
@@ -43,7 +45,7 @@ public:
 
     static long long get_node_count();
 
-    // History Helpers
+    // History Helpers (Deprecated, kept for API compatibility if needed, implementation empty)
     static void update_history(int side, int pt, int to, int bonus);
     static void update_capture_history(int side, int pt, int to, int captured_pt, int bonus);
     static void update_continuation(int side, int prev_pt, int prev_to, int pt, int to, int bonus);
@@ -57,7 +59,7 @@ public:
     static bool UseHistory;
 
 private:
-    static void iter_deep(Position& pos, const SearchLimits& limits);
+    // static void iter_deep(Position& pos, const SearchLimits& limits); // Now in SearchWorker
 };
 
 #endif // SEARCH_H
