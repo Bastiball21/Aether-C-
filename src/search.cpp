@@ -28,6 +28,7 @@ int LMRTable[64][64];
 
 // History Tables
 int History[2][6][64];
+int CaptureHistory[2][6][64][6];
 int16_t ContHistory[2][6][64][6][64];
 uint16_t CounterMove[2][4096];
 int KillerMoves[MAX_PLY][2];
@@ -87,16 +88,62 @@ long long Search::get_node_count() {
 void Search::clear() {
     TTable.clear();
     std::memset(History, 0, sizeof(History));
+    std::memset(CaptureHistory, 0, sizeof(CaptureHistory));
     std::memset(ContHistory, 0, sizeof(ContHistory));
     std::memset(CounterMove, 0, sizeof(CounterMove));
     std::memset(KillerMoves, 0, sizeof(KillerMoves));
     init_lmr();
 }
 
+void Search::clear_for_new_search() {
+    // Decay History
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 64; ++k) {
+                History[i][j][k] >>= 2; // Decay by 1/4 (multiply by 0.25) -> No, user said "value = value * 3 / 4 (25% decay) or value >>= 2 (more aggressive)"
+                // Let's stick to "value * 3 / 4" as it is gentler, or "value >>= 2" (div by 4, which is 75% decay? No, x >>= 2 is x / 4. That is 75% reduction.)
+                // User said: "value = value * 3 / 4 (25% decay) or value >>= 2 (more aggressive)."
+                // I will use value = (value * 3) / 4 to follow "25% decay".
+                History[i][j][k] = (History[i][j][k] * 3) / 4;
+            }
+        }
+    }
+
+    // Decay CaptureHistory
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 64; ++k) {
+                for (int l = 0; l < 6; ++l) {
+                    CaptureHistory[i][j][k][l] = (CaptureHistory[i][j][k][l] * 3) / 4;
+                }
+            }
+        }
+    }
+
+    // Decay ContHistory
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            for (int k = 0; k < 64; ++k) {
+                for (int l = 0; l < 6; ++l) {
+                    for (int m = 0; m < 64; ++m) {
+                        ContHistory[i][j][k][l][m] = (ContHistory[i][j][k][l][m] * 3) / 4;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // History Update Helpers
 void Search::update_history(int side, int pt, int to, int bonus) {
     if (side < 0 || side > 1 || pt < 0 || pt > 5 || to < 0 || to > 63) return;
     int& h = History[side][pt][to];
+    h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
+}
+
+void Search::update_capture_history(int side, int pt, int to, int captured_pt, int bonus) {
+    if (side < 0 || side > 1 || pt < 0 || pt > 5 || to < 0 || to > 63 || captured_pt < 0 || captured_pt > 5) return;
+    int& h = CaptureHistory[side][pt][to][captured_pt];
     h += bonus - (h * std::abs(bonus)) / MAX_HISTORY;
 }
 
@@ -204,11 +251,35 @@ public:
             int see_score = see(pos, m);
             int mvv_lva = (victim_val * 10) - attacker_val;
 
+            int capture_history = 0;
+            if (attacker != NO_PIECE && victim != NO_PIECE) {
+                // If it's en-passant, victim is a pawn
+                int victim_pt = (flag == 5) ? 0 : (victim % 6);
+                int attacker_pt = attacker % 6;
+                capture_history = CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
+            } else if (flag == 5) { // En passant, but victim might be NO_PIECE in pos.piece_on() because it's empty square
+                 int victim_pt = 0; // Pawn
+                 int attacker_pt = attacker % 6;
+                 capture_history = CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
+            } else if ((flag & 8)) { // Promotion
+                // Promotion capture handled above? No, promotion capture flag is different or combined?
+                // UCI promo: flag & 8.
+                // If it is a capture, victim != NO_PIECE usually.
+                // If it is a promo without capture? Then score_captures is only called for captures?
+                // generate_captures generates all captures + queen promotions.
+                // Wait, generate_captures generates captures AND promotions.
+                if (victim != NO_PIECE) {
+                    int victim_pt = victim % 6;
+                    int attacker_pt = attacker % 6;
+                    capture_history = CaptureHistory[pos.side_to_move()][attacker_pt][m & 0x3F][victim_pt];
+                }
+            }
+
             if (see_score >= 0) {
-                scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score;
+                scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score + capture_history;
                 is_bad_capture[i] = false;
             } else {
-                scores[i] = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score;
+                scores[i] = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score + capture_history;
                 is_bad_capture[i] = true;
             }
         }
@@ -588,11 +659,16 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
              if (static_eval + fut_margin <= alpha) continue;
         }
 
-        if (is_cap && !in_check && depth <= 5) {
+        if (is_cap && !in_check) {
             bool is_promo = (move >> 12) & 8;
+
             if (!is_promo) {
-                int margin = (depth - 1) * -50;
-                if (see(pos, move) < margin) continue;
+                if (depth <= 3) {
+                     if (see(pos, move) < 0) continue;
+                } else if (depth <= 5) {
+                     int margin = (depth - 1) * -50;
+                     if (see(pos, move) < margin) continue;
+                }
             }
         }
 
@@ -667,15 +743,58 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
 
         if (score > alpha) {
             alpha = score;
+
+            // PV/Root Best move update (half bonus)
+            // If alpha < beta (meaning we didn't fail high yet, but we found a new best move)
+            // This is "optional smaller bonus for PV/root best".
+            // Logic: if score > alpha, this move is better than previous best.
+            // If score < beta, it's a PV node update (or root update if at root).
+            // We should apply it here.
+
+            if (ply < MAX_PLY) {
+                bool is_capture = ((flag & 4) || (flag == 5) || (flag & 8));
+                int depth_bonus = depth * depth;
+                if (depth_bonus > 400) depth_bonus = 400;
+
+                // PV Bonus (Half)
+                if (score < beta) {
+                    if (is_capture) {
+                        // Capture History PV update
+                        Piece victim = pos.piece_on(to_sq);
+                        if (flag == 5) victim = (pos.side_to_move() == WHITE) ? B_PAWN : W_PAWN; // Approximate or actual pawn
+
+                        if (victim != NO_PIECE || (flag == 5)) {
+                             int victim_pt = (flag == 5) ? 0 : (victim % 6);
+                             int attacker_pt = moved_piece % 6;
+                             Search::update_capture_history(pos.side_to_move(), attacker_pt, to_sq, victim_pt, depth_bonus / 2);
+                        }
+                    } else {
+                        // Quiet History PV update
+                        // User instruction: "Also add the “PV/root best” smaller bonus (do it; it’s worth it and low risk):"
+                        // It implies both quiet and capture? User said "Use it to score captures ... Update on beta cutoff ... Optional smaller bonus for PV/root best."
+                        // It seems focused on Capture History. But "PV/root best" usually applies to all moves.
+                        // However, the context was "Implement Capture History ... Update on beta cutoff ... Optional smaller bonus".
+                        // So I will stick to Capture History PV bonus.
+                        // Wait, user said "Also add the 'PV/root best' smaller bonus... If move becomes best move in PV node or root but doesn't cutoff, apply half bonus"
+                        // Does it apply to quiet history too? "Keep it simple and cheap."
+                        // I will apply it to capture history as requested in that section.
+                        // If I apply to quiet history, I need to check if it's safe.
+                        // Quiet history is usually updated on cutoff.
+                        // I will only update CaptureHistory for now as that was the main task.
+                    }
+                }
+            }
+
             if (alpha >= beta) {
                 if (ply < MAX_PLY) {
                      bool is_capture = ((flag & 4) || (flag == 5) || (flag & 8));
+
+                     int depth_bonus = depth * depth;
+                     if (depth_bonus > 400) depth_bonus = 400;
+
                      if (!is_capture) {
                          KillerMoves[ply][1] = KillerMoves[ply][0];
                          KillerMoves[ply][0] = move;
-
-                         int depth_bonus = depth * depth;
-                         if (depth_bonus > 400) depth_bonus = 400;
 
                          Square f = (Square)((move >> 6) & 0x3F);
                          Square t = (Square)(move & 0x3F);
@@ -712,6 +831,23 @@ int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_al
                                  }
                              }
                          }
+                     } else {
+                         // Capture History Cutoff Update
+                         Piece victim = pos.piece_on(to_sq);
+                         // Handle En Passant for victim retrieval
+                         // The victim is not on to_sq if En Passant?
+                         // "move" has flags.
+                         if (flag == 5) {
+                             // En passant. Victim is on (to_sq - push_dir).
+                             // But we just need piece type (Pawn).
+                             victim = (pos.side_to_move() == WHITE) ? B_PAWN : W_PAWN;
+                         }
+
+                         if (victim != NO_PIECE || flag == 5) {
+                             int victim_pt = (flag == 5) ? 0 : (victim % 6);
+                             int attacker_pt = moved_piece % 6;
+                             Search::update_capture_history(pos.side_to_move(), attacker_pt, to_sq, victim_pt, depth_bonus);
+                         }
                      }
                 }
                 break;
@@ -736,6 +872,7 @@ void Search::start(Position& pos, const SearchLimits& limits) {
         init_lmr();
         init = true;
     }
+    Search::clear_for_new_search();
     stop_flag = false;
     node_count = 0;
     start_time = steady_clock::now();
