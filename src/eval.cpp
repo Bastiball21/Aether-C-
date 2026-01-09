@@ -30,6 +30,21 @@ namespace Eval {
     const int PASSED_PAWN_BLOCKER_PENALTY_MG = -20;
     const int PASSED_PAWN_BLOCKER_PENALTY_EG = -40;
 
+    // Piece Activity Constants
+    const int BAD_BISHOP_PENALTY_MG = -10;
+    const int BAD_BISHOP_PENALTY_EG = -10;
+    const int ROOK_ON_SEVENTH_MG = 20;
+    const int ROOK_ON_SEVENTH_EG = 40;
+    const int ROOK_BEHIND_PASSED_MG = 10;
+    const int ROOK_BEHIND_PASSED_EG = 30;
+    const int KNIGHT_OUTPOST_BONUS_MG = 25;
+    const int KNIGHT_OUTPOST_BONUS_EG = 15;
+
+    // Endgame Constants
+    const int KING_EG_ACTIVITY_TABLE[8] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // Placeholder if needed, but using formula is easier
+    // Or just simple Centrality Bonus in EG:
+    // (4 - dist_to_center) * 10
+
     // King Safety Constants
     const int KING_ZONE_ATTACK_WEIGHTS[6] = { 0, 0, 2, 2, 3, 5 }; // P, N, B, R, Q
     const int KING_SAFETY_TABLE[100] = {
@@ -430,10 +445,38 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                             mg -= INACTIVE_PENALTY_MG * us_sign;
                             eg -= INACTIVE_PENALTY_EG * us_sign;
                         }
+
+                        // Bad Bishop: on same color as many pawns
+                        if (pt == BISHOP) {
+                             Bitboard light_sq_mask = 0x55AA55AA55AA55AAULL;
+                             bool bishop_is_light = (Bitboards::check_bit(light_sq_mask, sq));
+                             Bitboard my_pawns_same_color = my_pawns & (bishop_is_light ? light_sq_mask : ~light_sq_mask);
+                             // If more than 3 pawns on same color, penalize
+                             if (Bitboards::count(my_pawns_same_color) >= 3) {
+                                  mg += BAD_BISHOP_PENALTY_MG * us_sign;
+                                  eg += BAD_BISHOP_PENALTY_EG * us_sign;
+                             }
+                        }
+
+                        // Knight Outpost: Rank 4-6, supported by own pawn
+                        if (pt == KNIGHT) {
+                             int r = rank_of(sq);
+                             // White: Ranks 3,4,5 (Index 3,4,5? Ranks 4-6 are indices 3,4,5).
+                             // Black: Ranks 6,5,4 (Indices 4,3,2)
+                             // Let's use relative rank.
+                             int rel_r = (us == WHITE) ? r : 7 - r;
+                             if (rel_r >= 3 && rel_r <= 5) {
+                                  if (Bitboards::check_bit(pawn_entry.pawn_attacks[us], sq)) {
+                                      mg += KNIGHT_OUTPOST_BONUS_MG * us_sign;
+                                      eg += KNIGHT_OUTPOST_BONUS_EG * us_sign;
+                                  }
+                             }
+                        }
                     }
 
                     if (pt == ROOK) {
                         int f = file_of(sq);
+                        int r = rank_of(sq);
                         Bitboard file_mask = (Bitboards::FileA << f);
                         bool my_pawns_on_file = (my_pawns & file_mask);
                         bool enemy_pawns_on_file = (enemy_pawns & file_mask);
@@ -445,6 +488,31 @@ Bitboard my_pawns = state.pieces(PAWN, us);
                             } else {
                                 mg += ROOK_SEMI_OPEN_FILE_BONUS_MG * us_sign;
                                 eg += ROOK_SEMI_OPEN_FILE_BONUS_EG * us_sign;
+                            }
+                        }
+
+                        // Rook on 7th (relative rank 6, 0-indexed)
+                        int rel_r = (us == WHITE) ? r : 7 - r;
+                        if (rel_r == 6) {
+                            // Bonus if attacking enemy pawns or cutting off king?
+                            // Simple version: if enemy king is on rank 7/8 (relative 7) OR enemy has pawns on rank 7 (relative 1)
+                            // For now, flat bonus + condition that there are enemy pawns or king near.
+                            // Simplified: Flat bonus if opponent King is on Rank 7 or 8 (relative 7 or 0 for opponent? No. Opponent King on Back Rank).
+                            // Let's stick to simple "Rook on 7th" bonus usually implies attacking chances.
+                            mg += ROOK_ON_SEVENTH_MG * us_sign;
+                            eg += ROOK_ON_SEVENTH_EG * us_sign;
+                        }
+
+                        // Rook behind passed pawn
+                        Bitboard my_passed_file = (pawn_entry.passed_pawns[us] & file_mask);
+                        if (my_passed_file) {
+                            Square relevant_pawn = (Square)Bitboards::lsb(my_passed_file); // For both, any passed pawn is relevant. lsb is fine.
+
+                            // White: Rook < Pawn (Rook index < Pawn index, as Pawn is further up ranks 2-7)
+                            // Black: Rook > Pawn (Rook index > Pawn index, as Pawn is further down ranks 6-1)
+                            if ((us == WHITE && sq < relevant_pawn) || (us == BLACK && sq > relevant_pawn)) {
+                                mg += ROOK_BEHIND_PASSED_MG * us_sign;
+                                eg += ROOK_BEHIND_PASSED_EG * us_sign;
                             }
                         }
                     }
@@ -548,6 +616,35 @@ Bitboard my_pawns = state.pieces(PAWN, us);
         mg += coordination_score[WHITE] - coordination_score[BLACK];
         eg += (coordination_score[WHITE] - coordination_score[BLACK]) / 2;
 
+        // --- Phase 4: Endgame Knowledge ---
+
+        // King Activity (Endgame Only)
+        // Bonus for King being central in endgame.
+        // We use 'phase' to determine if we are in endgame?
+        // We already accumulate into 'eg', so just add to 'eg'.
+        for (Color side : {WHITE, BLACK}) {
+             int us_sign = (side == WHITE) ? 1 : -1;
+             Square k = king_sqs[side];
+             // Center is between d and e.
+             // File 0..7. Center 3.5.
+             // Dist from 3.5:
+             // 3 (d) -> 0.5. 4 (e) -> 0.5.
+             // 0 (a) -> 3.5.
+             // Let's use simpler logic:
+             // Center files (C,D,E,F) -> good.
+             // Center ranks (3,4,5,6) -> good.
+             // Distance metric: max(abs(f - 3.5), abs(r - 3.5))
+             // Int math: max(abs(2*f - 7), abs(2*r - 7))
+             // Range: 1 (center) to 7 (corner).
+             int f2 = 2 * file_of(k);
+             int r2 = 2 * rank_of(k);
+             int dist = std::max(std::abs(f2 - 7), std::abs(r2 - 7));
+             // dist is 1..7.
+             // Bonus: (7 - dist) * 5
+
+             eg += ((7 - dist) * 5) * us_sign;
+        }
+
         // Hanging Pieces Logic (Simplified port)
         int hanging_val = 0;
         const bool ENABLE_HANGING_EVAL = true;
@@ -581,6 +678,33 @@ Bitboard my_pawns = state.pieces(PAWN, us);
 
             mg -= hanging_val * us_sign;
             eg -= (hanging_val / 2) * us_sign;
+        }
+
+        // OCB Scaling (Opposite Colored Bishops)
+        // If we have only bishops and pawns (or just 1 minor each?), and bishops are opposite colors.
+        // Simplified check:
+        // Count pieces.
+        if (state.non_pawn_material(WHITE) == 330 && state.non_pawn_material(BLACK) == 330) { // Approx Bishop Value
+             // Check strict count to be sure it's 1 bishop vs 1 bishop (no rooks/queens/knights)
+             // non_pawn_material sums piece values.
+             // If 330, likely 1 bishop (or many pawns? non_pawn_material excludes pawns).
+             // Assume 330 = 1 Bishop.
+             if (Bitboards::count(state.pieces(BISHOP, WHITE)) == 1 &&
+                 Bitboards::count(state.pieces(BISHOP, BLACK)) == 1) {
+
+                 Square w_b = (Square)Bitboards::lsb(state.pieces(BISHOP, WHITE));
+                 Square b_b = (Square)Bitboards::lsb(state.pieces(BISHOP, BLACK));
+
+                 // Check colors
+                 bool w_light = Bitboards::check_bit(0x55AA55AA55AA55AAULL, w_b);
+                 bool b_light = Bitboards::check_bit(0x55AA55AA55AA55AAULL, b_b);
+
+                 if (w_light != b_light) {
+                     // Opposite Colored Bishops with no other pieces.
+                     // Scale down significantly.
+                     score = (score * 64) / 128; // 50%
+                 }
+             }
         }
 
         // Clamp and Scale again
