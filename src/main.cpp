@@ -9,6 +9,7 @@
 #include "tt.h"
 #include "movegen.h"
 #include "perft.h"
+#include "eval.h"
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
@@ -68,6 +69,7 @@ std::thread search_thread;
 int OptHash = 64;
 int OptThreads = 1;
 int OptMoveOverhead = 10;
+int OptContempt = 0;
 bool OptChess960 = false;
 bool OptNullMove = true;
 bool OptProbCut = true;
@@ -92,6 +94,8 @@ int main() {
     // Initialize TT with default
     TTable.resize(OptHash);
 
+    Eval::set_contempt(OptContempt);
+
     std::string line;
     std::string token;
 
@@ -105,6 +109,7 @@ int main() {
             std::cout << "option name Hash type spin default 64 min 1 max 65536\n";
             std::cout << "option name Threads type spin default 1 min 1 max 64\n";
             std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000\n";
+            std::cout << "option name Contempt type spin default 0 min -200 max 200\n";
             std::cout << "option name UCI_Chess960 type check default false\n";
             std::cout << "option name NullMove type check default true\n";
             std::cout << "option name ProbCut type check default true\n";
@@ -130,6 +135,9 @@ int main() {
                         std::cout << "info string Threads > 1 not supported yet\n";
                     } else if (name == "MoveOverhead") {
                         OptMoveOverhead = std::stoi(value);
+                    } else if (name == "Contempt") {
+                        OptContempt = std::stoi(value);
+                        Eval::set_contempt(OptContempt);
                     } else if (name == "UCI_Chess960") {
                         OptChess960 = (value == "true");
                     } else if (name == "NullMove") {

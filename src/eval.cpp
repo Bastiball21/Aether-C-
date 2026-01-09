@@ -30,6 +30,9 @@ namespace Eval {
     const int PASSED_PAWN_BLOCKER_PENALTY_MG = -20;
     const int PASSED_PAWN_BLOCKER_PENALTY_EG = -40;
 
+    // Contempt
+    int GlobalContempt = 0;
+
     // Piece Activity Constants
     const int BAD_BISHOP_PENALTY_MG = -10;
     const int BAD_BISHOP_PENALTY_EG = -10;
@@ -293,6 +296,10 @@ namespace Eval {
             case KING: return 20000;
             default: return 0;
         }
+    }
+
+    void set_contempt(int c) {
+        GlobalContempt = c;
     }
 
     int evaluate_hce(const Position& state, int alpha, int beta) {
@@ -712,7 +719,23 @@ Bitboard my_pawns = state.pieces(PAWN, us);
         score = (mg * phase_clamped + eg * (24 - phase_clamped)) / 24;
         score = (score * get_scale_factor(state, score)) / 128;
 
-        return (state.side_to_move() == BLACK) ? -score : score;
+        score_perspective = (state.side_to_move() == BLACK) ? -score : score;
+
+        // Apply Contempt
+        // Tapered contempt: Full effect at 0 cp, linearly reduces to 0 at |score| >= 200cp.
+        // No effect on mate scores.
+        if (GlobalContempt != 0) {
+             const int MATE_TH = 30000; // Match search.cpp
+             if (std::abs(score_perspective) < MATE_TH) {
+                 int a = std::abs(score_perspective);
+                 if (a < 200) {
+                     int t = 200 - a;
+                     score_perspective += (GlobalContempt * t) / 200;
+                 }
+             }
+        }
+
+        return score_perspective;
     }
 
     int evaluate(const Position& pos, int alpha, int beta) {

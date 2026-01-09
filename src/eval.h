@@ -20,6 +20,7 @@ namespace Eval {
     extern const int PHASE_WEIGHTS[6];
 
     // Main Eval
+    void set_contempt(int c);
     int evaluate(const Position& pos, int alpha = -32000, int beta = 32000);
     int evaluate_light(const Position& pos);
 
