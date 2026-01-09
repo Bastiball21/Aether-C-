@@ -1,5 +1,5 @@
 #include "worker.h"
-#include "eval.h"
+#include "eval/eval.h"
 #include "movegen.h"
 #include "tt.h"
 #include "see.h"

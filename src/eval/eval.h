@@ -2,6 +2,7 @@
 #define EVAL_H
 
 #include "position.h"
+#include "eval_params.h" // For load_params visibility or just declare it
 
 namespace Eval {
 

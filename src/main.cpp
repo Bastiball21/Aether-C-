@@ -9,7 +9,8 @@
 #include "tt.h"
 #include "movegen.h"
 #include "perft.h"
-#include "eval.h"
+#include "eval/eval.h"
+#include "eval/eval_tune.h"
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
@@ -83,10 +84,30 @@ void join_search() {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     // I/O Speedup
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
+
+    // Initialize Eval Params
+    Eval::init_params();
+
+    // CLI Mode Check
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "tuneepd" && i + 2 < argc) {
+            Eval::tune_epd(argv[i+1], argv[i+2]);
+            return 0;
+        }
+        if ((arg == "--weights" || arg == "-w") && i + 1 < argc) {
+            if (Eval::load_params(argv[i+1])) {
+                std::cout << "Weights loaded from " << argv[i+1] << "\n";
+            } else {
+                std::cerr << "Failed to load weights from " << argv[i+1] << "\n";
+            }
+            i++;
+        }
+    }
 
     Position pos;
     pos.set_startpos();
@@ -250,6 +271,18 @@ int main() {
                  while (ss >> token) fen += token + " ";
                  pos.set(fen);
                  Eval::trace_eval(pos);
+             }
+        } else if (token == "tuneepd") {
+             // ./Aether-C tuneepd input.epd output.csv
+             // This is usually a CLI arg, not UCI.
+             // But user said: "./Aether-C tuneepd <input> <output>"
+             // This implies checking argc/argv in main, NOT in UCI loop.
+             // However, if we are in UCI loop, we can support it too.
+             std::string infile, outfile;
+             if (ss >> infile >> outfile) {
+                 Eval::tune_epd(infile, outfile);
+             } else {
+                 std::cout << "Usage: tuneepd <input.epd> <output.csv>\n";
              }
         }
     }
