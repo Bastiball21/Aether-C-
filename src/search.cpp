@@ -872,7 +872,6 @@ void SearchWorker::iter_deep() {
     std::stable_sort(root_moves.begin(), root_moves.end(), compare_root_moves);
 
     for (int depth = 1; depth <= max_depth; depth++) {
-        int score = 0;
 
         // Sort based on previous iteration scores
         if (depth > 1) {
@@ -895,6 +894,13 @@ void SearchWorker::iter_deep() {
              if (stop_flag) break;
              best_score = -INFINITY_SCORE;
 
+             // Important: We must use the ORIGINAL bounds for this aspiration attempt
+             // when checking for fail-low/fail-high. 'alpha' and 'beta' track the current
+             // window, while 'current_alpha' tracks the working lower bound for PVS.
+             int alpha0 = alpha;
+             int beta0 = beta;
+             int current_alpha = alpha0;
+
              for (size_t i = 0; i < root_moves.size(); ++i) {
                  if (thread_id != 0) {
                      // thread_id is 1..N. Master is 0.
@@ -906,11 +912,11 @@ void SearchWorker::iter_deep() {
 
                  int val;
                  if (i == 0 && thread_id == 0) {
-                     val = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
+                     val = -negamax(pos, depth - 1, -beta0, -current_alpha, 1, true, move, 0);
                  } else {
-                     val = -negamax(pos, depth - 1, -alpha - 1, -alpha, 1, true, move, 0);
-                     if (val > alpha && val < beta) {
-                         val = -negamax(pos, depth - 1, -beta, -alpha, 1, true, move, 0);
+                     val = -negamax(pos, depth - 1, -current_alpha - 1, -current_alpha, 1, true, move, 0);
+                     if (val > current_alpha && val < beta0) {
+                         val = -negamax(pos, depth - 1, -beta0, -current_alpha, 1, true, move, 0);
                      }
                  }
 
@@ -920,23 +926,23 @@ void SearchWorker::iter_deep() {
                  root_moves[i].score = val;
 
                  if (val > best_score) best_score = val;
-                 if (val > alpha) alpha = val;
-                 if (val >= beta && thread_id == 0) break;
+                 if (val > current_alpha) current_alpha = val;
+                 // Cutoff if we beat beta
+                 if (val >= beta0 && thread_id == 0) break;
              }
 
              if (stop_flag) break;
 
              if (use_aspiration) {
-                 if (best_score <= alpha) {
-                     beta = (alpha + beta) / 2;
-                     alpha = std::max(-INFINITY_SCORE, alpha - delta);
+                 if (best_score <= alpha0) {
+                     beta = (alpha0 + beta0) / 2;
+                     alpha = std::max(-INFINITY_SCORE, alpha0 - delta);
                      delta = delta + delta / 2;
-                 } else if (best_score >= beta) {
-                     alpha = (alpha + beta) / 2;
-                     beta = std::min(INFINITY_SCORE, beta + delta);
+                 } else if (best_score >= beta0) {
+                     alpha = (alpha0 + beta0) / 2;
+                     beta = std::min(INFINITY_SCORE, beta0 + delta);
                      delta = delta + delta / 2;
                  } else {
-                     score = best_score;
                      break;
                  }
                  if (delta > 2000) {
@@ -945,12 +951,10 @@ void SearchWorker::iter_deep() {
                      use_aspiration = false;
                  }
              } else {
-                 score = best_score;
                  break;
              }
         }
 
-        prev_score = score;
         if (stop_flag) break;
 
         // Reporting (Master Only)
@@ -967,6 +971,11 @@ void SearchWorker::iter_deep() {
                     best_move = rm.move;
                 }
             }
+
+            // Centralize score calculation from the authoritative source (root_moves)
+            // instead of using a potentially stale local variable.
+            int display_score = best_val;
+            prev_score = best_val;
 
             std::string pv_str = "";
             if (best_move != 0) {
@@ -999,12 +1008,12 @@ void SearchWorker::iter_deep() {
             }
 
             std::string score_str;
-            if (std::abs(score) > 30000) {
-                int mate_in_moves = (MATE_SCORE - std::abs(score) + 1) / 2;
-                if (score < 0) score_str = "mate -" + std::to_string(mate_in_moves);
+            if (std::abs(display_score) > 30000) {
+                int mate_in_moves = (MATE_SCORE - std::abs(display_score) + 1) / 2;
+                if (display_score < 0) score_str = "mate -" + std::to_string(mate_in_moves);
                 else score_str = "mate " + std::to_string(mate_in_moves);
             } else {
-                score_str = "cp " + std::to_string(score);
+                score_str = "cp " + std::to_string(display_score);
             }
 
             std::cout << "info depth " << depth
@@ -1014,7 +1023,7 @@ void SearchWorker::iter_deep() {
                       << " nps " << (us > 0 ? (GlobalPool.get_total_nodes() * 1000000LL / us) : 0)
                       << " pv " << pv_str << "\n";
 
-            TTable.store(pos.key(), best_move, score_to_tt(score, 0), Eval::evaluate(pos), depth, 3);
+            TTable.store(pos.key(), best_move, score_to_tt(display_score, 0), Eval::evaluate(pos), depth, 3);
         }
     }
 
