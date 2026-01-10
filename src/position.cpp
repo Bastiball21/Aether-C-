@@ -1,4 +1,6 @@
 #include "position.h"
+#include "nnue/nnue.h"
+#include "nnue/features.h"
 #include <sstream>
 #include <cstring>
 #include <cassert>
@@ -171,6 +173,23 @@ void Position::set(const std::string& fen) {
     int fullmove;
     ss >> fullmove;
     halfmove_clock = (fullmove - 1) * 2 + (side == BLACK);
+
+    // Initial StateInfo
+    StateInfo si;
+    si.key = st_key;
+    si.pawn_key = p_key;
+    si.castling = castling;
+    si.ep_square = ep_square;
+    si.rule50 = rule50;
+    si.captured = NO_PIECE;
+
+    // Refresh NNUE accumulators
+    if (NNUE::IsLoaded) {
+        NNUE::refresh_accumulator(*this, WHITE, si.accumulators[WHITE]);
+        NNUE::refresh_accumulator(*this, BLACK, si.accumulators[BLACK]);
+    }
+
+    history.push_back(si);
 }
 
 int Position::non_pawn_material(Color c) const {
@@ -182,48 +201,57 @@ int Position::non_pawn_material(Color c) const {
     return mat;
 }
 
-// Basic move encoding:
-// 0-5: from, 6-11: to, 12-13: type (0=norm, 1=promo, 2=enpassant, 3=castling), 14-15: promo type (0=N,1=B,2=R,3=Q)
-// Actually standard is:
-// bits 0-5: dest
-// bits 6-11: src
-// bits 12-13: promotion piece type - 2 (so 0=N, 1=B, 2=R, 3=Q)
-// bits 14-15: flags?
-// Let's use a simpler 16-bit encoding:
-// 0-5: to
-// 6-11: from
-// 12-15: flags
-// Flags:
-// 0: quiet
-// 1: double pawn push
-// 2: king castle
-// 3: queen castle
-// 4: capture
-// 5: ep capture
-// 8+promo: promotion (8=N, 9=B, 10=R, 11=Q)
-// 12+promo: promo capture
-//
-// But wait, the Rust code uses: `pub struct Move { uint16_t data }`
-// And `eval.rs` / `search.rs` don't show the encoding.
-// I will implement a standard encoding.
-// Bits 0-5: To
-// Bits 6-11: From
-// Bits 12-15: Flag
-// Flag:
-// 0000: Quiet
-// 0001: Double Pawn Push
-// 0010: King Castle
-// 0011: Queen Castle
-// 0100: Capture
-// 0101: EP Capture
-// 1000: Promo N
-// 1001: Promo B
-// 1010: Promo R
-// 1011: Promo Q
-// 1100: Promo Capture N
-// 1101: Promo Capture B
-// 1110: Promo Capture R
-// 1111: Promo Capture Q
+// Internal helper to update accumulator
+static void update_acc(NNUE::Accumulator& acc, int k_bucket, int16_t* weights,
+                       Piece p, Square from, Square to, Color perspective) {
+    int idx_rem, idx_add;
+    if (perspective == WHITE) {
+        idx_rem = NNUE::feature_index(p, from);
+        idx_add = NNUE::feature_index(p, to);
+    } else {
+        idx_rem = NNUE::feature_index_mirrored(p, from);
+        idx_add = NNUE::feature_index_mirrored(p, to);
+    }
+
+    // Weights pointer
+    const int16_t* w_rem = weights + (idx_rem * NNUE::kFeatureTransformerOutput);
+    const int16_t* w_add = weights + (idx_add * NNUE::kFeatureTransformerOutput);
+
+    for (int i = 0; i < NNUE::kFeatureTransformerOutput; ++i) {
+        acc.values[i] -= w_rem[i];
+        acc.values[i] += w_add[i];
+    }
+}
+
+static void remove_acc(NNUE::Accumulator& acc, int k_bucket, int16_t* weights,
+                       Piece p, Square sq, Color perspective) {
+    int idx;
+    if (perspective == WHITE) {
+        idx = NNUE::feature_index(p, sq);
+    } else {
+        idx = NNUE::feature_index_mirrored(p, sq);
+    }
+
+    const int16_t* w = weights + (idx * NNUE::kFeatureTransformerOutput);
+    for (int i = 0; i < NNUE::kFeatureTransformerOutput; ++i) {
+        acc.values[i] -= w[i];
+    }
+}
+
+static void add_acc(NNUE::Accumulator& acc, int k_bucket, int16_t* weights,
+                    Piece p, Square sq, Color perspective) {
+    int idx;
+    if (perspective == WHITE) {
+        idx = NNUE::feature_index(p, sq);
+    } else {
+        idx = NNUE::feature_index_mirrored(p, sq);
+    }
+
+    const int16_t* w = weights + (idx * NNUE::kFeatureTransformerOutput);
+    for (int i = 0; i < NNUE::kFeatureTransformerOutput; ++i) {
+        acc.values[i] += w[i];
+    }
+}
 
 void Position::make_move(uint16_t move) {
 #ifndef NDEBUG
@@ -232,6 +260,14 @@ void Position::make_move(uint16_t move) {
     Square to = (Square)(move & 0x3F);
     Square from = (Square)((move >> 6) & 0x3F);
     int flag = (move >> 12);
+
+    // Save current accumulators before modification
+    NNUE::Accumulator prev_acc[2];
+    bool use_nnue = NNUE::IsLoaded;
+    if (use_nnue) {
+        prev_acc[WHITE] = history.back().accumulators[WHITE];
+        prev_acc[BLACK] = history.back().accumulators[BLACK];
+    }
 
     StateInfo si;
     si.key = st_key;
@@ -250,38 +286,46 @@ void Position::make_move(uint16_t move) {
     if (pt == PAWN) rule50 = 0;
 
     // Handle Capture
+    Piece captured_piece = NO_PIECE;
+    Square capture_sq = to;
     if ((flag & 4) || (flag == 5)) { // Capture or EP
         rule50 = 0;
         if (flag == 5) { // EP
-            Square cap_sq = (side == WHITE) ? (to + SOUTH) : (to + NORTH);
-            si.captured = board[cap_sq];
-            remove_piece(cap_sq);
-        } else {
-            si.captured = board[to];
-            remove_piece(to);
+            capture_sq = (side == WHITE) ? (to + SOUTH) : (to + NORTH);
         }
+        captured_piece = board[capture_sq];
+        si.captured = captured_piece;
+        remove_piece(capture_sq);
     }
 
     // Move Piece
     move_piece(from, to);
 
     // Promotion
+    Piece promo_piece = NO_PIECE;
     if (flag & 8) {
         PieceType promo_pt = (PieceType)((flag & 3) + 1); // N=1, B=2, R=3, Q=4
-        Piece promo_p = (Piece)(promo_pt + (side == WHITE ? 0 : 6));
+        promo_piece = (Piece)(promo_pt + (side == WHITE ? 0 : 6));
         remove_piece(to);
-        put_piece(promo_p, to);
+        put_piece(promo_piece, to);
     }
 
     // Castling
+    bool castling_move = false;
+    Square rook_from = SQ_NONE, rook_to = SQ_NONE;
+    Piece rook_piece = NO_PIECE;
     if (flag == 2) { // King Side
-        Square r_from = (side == WHITE) ? SQ_H1 : SQ_H8;
-        Square r_to = (side == WHITE) ? SQ_F1 : SQ_F8;
-        move_piece(r_from, r_to);
+        castling_move = true;
+        rook_from = (side == WHITE) ? SQ_H1 : SQ_H8;
+        rook_to = (side == WHITE) ? SQ_F1 : SQ_F8;
+        rook_piece = (side == WHITE) ? W_ROOK : B_ROOK;
+        move_piece(rook_from, rook_to);
     } else if (flag == 3) { // Queen Side
-        Square r_from = (side == WHITE) ? SQ_A1 : SQ_A8;
-        Square r_to = (side == WHITE) ? SQ_D1 : SQ_D8;
-        move_piece(r_from, r_to);
+        castling_move = true;
+        rook_from = (side == WHITE) ? SQ_A1 : SQ_A8;
+        rook_to = (side == WHITE) ? SQ_D1 : SQ_D8;
+        rook_piece = (side == WHITE) ? W_ROOK : B_ROOK;
+        move_piece(rook_from, rook_to);
     }
 
     // Update Castling Rights
@@ -291,7 +335,6 @@ void Position::make_move(uint16_t move) {
         else castling &= ~12;
     }
     // Rooks moved or captured
-    // Simplest: check from and to for Rooks starting squares
     auto check_rook = [&](Square sq) {
         if (sq == SQ_H1) castling &= ~1;
         else if (sq == SQ_A1) castling &= ~2;
@@ -316,6 +359,81 @@ void Position::make_move(uint16_t move) {
     side = ~side;
     st_key ^= Zobrist::side;
 
+    // --- NNUE Update ---
+    if (use_nnue) {
+        // Copy base accumulators
+        si.accumulators[WHITE] = prev_acc[WHITE];
+        si.accumulators[BLACK] = prev_acc[BLACK];
+
+        // Apply updates
+        // Helper to update one accumulator
+        auto do_update = [&](Color perspective) {
+            NNUE::Accumulator& acc = si.accumulators[perspective];
+
+            // 1. King move? Refresh if OWN king moved.
+            bool king_moved = (pt == KING);
+            if (king_moved && perspective == (side == WHITE ? BLACK : WHITE)) { // 'side' is already flipped to STM
+                // Wait, side is now STM (next player).
+                // If I made a move (previous side), and I moved my King.
+                // perspective == previous_side means OWN accumulator for the mover.
+                // side is flipped at end of make_move.
+                // Original side was ~side.
+
+                // Let's use specific color checks.
+                // Mover is ~side.
+                Color mover = ~side;
+                if (perspective == mover) {
+                    // Own King Moved -> Full Refresh
+                    // We need to use the CURRENT position state (after move).
+                    NNUE::refresh_accumulator(*this, perspective, acc);
+                    return; // Done for this perspective
+                }
+            }
+
+            // Get weights pointer for the bucket
+            // Bucket is determined by King Square.
+            // If King didn't move for this perspective, bucket is same.
+            Square k_sq = Bitboards::lsb(pieces(KING, perspective));
+            int k_bucket = NNUE::king_bucket(k_sq, perspective);
+            int16_t* weights = NNUE::GlobalNetwork.ft_weights.data() +
+                               (k_bucket * 768 * NNUE::kFeatureTransformerOutput);
+
+            // 2. Remove Captured Piece
+            if (captured_piece != NO_PIECE) {
+                // If captured piece was KING, game over/illegal, but we handle it.
+                // Actually King capture not possible in legal chess.
+                remove_acc(acc, k_bucket, weights, captured_piece, capture_sq, perspective);
+            }
+
+            // 3. Move Piece (Remove From, Add To)
+            // If King moved (and perspective is Enemy), we update King feature.
+            // If Promotion, we remove Pawn, add Promo.
+            // If Castling, we move Rook too.
+
+            // Primary Piece Logic
+            if (flag & 8) { // Promotion
+                // Remove Pawn
+                remove_acc(acc, k_bucket, weights, p, from, perspective);
+                // Add Promo Piece
+                add_acc(acc, k_bucket, weights, promo_piece, to, perspective);
+            } else {
+                // Regular Move (or Castling King part)
+                // Note: For King move (Enemy perspective), p is King.
+                // p is the piece that moved.
+                // For Castling, p is King.
+                update_acc(acc, k_bucket, weights, p, from, to, perspective);
+            }
+
+            // Castling Rook Logic
+            if (castling_move) {
+                update_acc(acc, k_bucket, weights, rook_piece, rook_from, rook_to, perspective);
+            }
+        };
+
+        do_update(WHITE);
+        do_update(BLACK);
+    }
+
     // Push history
     history.push_back(si);
 }
@@ -329,8 +447,12 @@ void Position::make_null_move() {
     si.rule50 = rule50;
     si.captured = NO_PIECE;
 
-    // Update rule50 (null move doesn't reset it? usually not)
-    // Actually, usually it does NOT reset rule50.
+    // Copy NNUE accumulators
+    if (NNUE::IsLoaded && !history.empty()) {
+        si.accumulators[WHITE] = history.back().accumulators[WHITE];
+        si.accumulators[BLACK] = history.back().accumulators[BLACK];
+    }
+
     rule50++;
 
     // Clear EP
@@ -433,36 +555,13 @@ bool Position::in_check() const {
 }
 
 bool Position::is_repetition() const {
-    // Check current hash against history
-    // Rule: if same position appears 3 times, it's a draw.
-    // However, in search we often prune on *first* repetition (i.e. count >= 1 previous occurence)
-    // because returning draw score (0) avoids cycles.
-    // Standard practice: check backwards.
-    // Also check rule50 for efficiency (irreversible moves reset repetition list effectively)
-    // But we have full history.
-
-    // We iterate backwards.
-    // We start from history.size() - 2 because back() is current state pushed?
-    // Wait, history only contains *previous* states. `make_move` pushes current state (key, rule50, etc) *before* update?
-    // No. `make_move`:
-    // si.key = st_key; ... history.push_back(si);
-    // So history contains states *before* the move.
-    // The current position state is in `st_key`.
-
-    // So we check against history.
-    // We only need to check up to rule50 plies back?
-    // Irreversible moves (pawn move, capture) reset rule50 to 0.
-    // Any position before an irreversible move cannot be repeated (because pawn structure change or piece count change).
-    // So we only check `rule50` elements.
-
     int end = (int)history.size() - 1;
     int start = end - rule50;
     if (start < 0) start = 0;
 
     for (int i = end; i >= start; i--) {
         if (history[i].key == st_key) {
-            return true; // Found 1 repetition -> 2nd occurrence.
-            // Usually returns draw score immediately to avoid loops.
+            return true;
         }
     }
     return false;

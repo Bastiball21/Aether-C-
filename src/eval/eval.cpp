@@ -1,8 +1,12 @@
 #include "eval.h"
 #include "eval_params.h"
+#include "../nnue/nnue.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+
+// Declare globals from main.cpp
+extern bool OptUseNNUE;
 
 namespace Eval {
 
@@ -581,6 +585,9 @@ namespace Eval {
     }
 
     int evaluate(const Position& pos, int alpha, int beta) {
+        if (OptUseNNUE && NNUE::IsLoaded) {
+            return NNUE::evaluate(pos);
+        }
         return evaluate_hce(pos, alpha, beta);
     }
 

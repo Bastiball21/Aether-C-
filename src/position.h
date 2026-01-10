@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "bitboard.h"
+#include "nnue/nnue_structs.h"
 #include <string>
 #include <vector>
 
@@ -11,6 +12,18 @@ struct Move;
 
 class Position {
 public:
+    struct StateInfo {
+        Key key;
+        Key pawn_key;
+        int castling;
+        Square ep_square;
+        int rule50;
+        Piece captured;
+
+        // NNUE Accumulators
+        NNUE::Accumulator accumulators[2]; // 0=White, 1=Black
+    };
+
     Position();
 
     // Setup
@@ -47,6 +60,8 @@ public:
     bool in_check() const;
     bool is_repetition() const;
 
+    const StateInfo* state() const { return &history.back(); }
+
     // Debug
 #ifndef NDEBUG
     void debug_validate() const;
@@ -74,14 +89,6 @@ private:
     Key st_key;
     Key p_key;
 
-    struct StateInfo {
-        Key key;
-        Key pawn_key;
-        int castling;
-        Square ep_square;
-        int rule50;
-        Piece captured;
-    };
     std::vector<StateInfo> history;
 };
 
