@@ -32,6 +32,7 @@ struct SearchLimits {
     bool use_probcut = true;
     bool use_singular = true;
     bool use_history = true;
+    bool silent = false;
 };
 
 // History Tables Size
