@@ -11,6 +11,7 @@
 #include "perft.h"
 #include "eval/eval.h"
 #include "eval/eval_tune.h"
+#include "nnue/nnue.h"
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
@@ -76,6 +77,8 @@ bool OptNullMove = true;
 bool OptProbCut = true;
 bool OptSingularExt = true;
 bool OptUseHistory = true;
+bool OptUseNNUE = true;
+std::string OptEvalFile = "nn-aether.nnue";
 
 void join_search() {
     Search::stop();
@@ -91,6 +94,9 @@ int main(int argc, char* argv[]) {
 
     // Initialize Eval Params
     Eval::init_params();
+
+    // Try to load NNUE by default
+    NNUE::load_network(OptEvalFile);
 
     // CLI Mode Check
     for (int i = 1; i < argc; i++) {
@@ -136,6 +142,8 @@ int main(int argc, char* argv[]) {
             std::cout << "option name ProbCut type check default true\n";
             std::cout << "option name SingularExt type check default true\n";
             std::cout << "option name UseHistory type check default true\n";
+            std::cout << "option name UseNNUE type check default true\n";
+            std::cout << "option name EvalFile type string default nn-aether.nnue\n";
             std::cout << "uciok\n" << std::flush;
         } else if (token == "isready") {
             std::cout << "readyok\n" << std::flush;
@@ -168,6 +176,24 @@ int main(int argc, char* argv[]) {
                         OptSingularExt = (value == "true");
                     } else if (name == "UseHistory") {
                         OptUseHistory = (value == "true");
+                    } else if (name == "UseNNUE") {
+                        OptUseNNUE = (value == "true");
+                    } else if (name == "EvalFile") {
+                        OptEvalFile = value;
+                        if (NNUE::load_network(OptEvalFile)) {
+                            // If loaded successfully, refresh current position?
+                            // Usually a new game command or isready follows.
+                            // But if we are in analysis, we should update.
+                            // However, refreshing pos requires access to pos.
+                            // Since pos is in main loop scope, we can access it if we structure this differently.
+                            // For now, simpler to assume it applies next game or next eval.
+                            // But `pos` is here.
+                            NNUE::refresh_accumulator(pos, WHITE, const_cast<Position::StateInfo*>(pos.state())->accumulators[WHITE]);
+                            NNUE::refresh_accumulator(pos, BLACK, const_cast<Position::StateInfo*>(pos.state())->accumulators[BLACK]);
+                            std::cout << "info string NNUE Loaded: " << OptEvalFile << "\n";
+                        } else {
+                            std::cerr << "info string Failed to load network: " << OptEvalFile << "\n";
+                        }
                     }
                 }
             }
