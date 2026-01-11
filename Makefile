@@ -1,4 +1,5 @@
 CXX = g++
+CC = gcc
 
 # FLAGS EXPLANATION:
 # -std=c++20: Uses C++20 standard
@@ -9,16 +10,22 @@ CXX = g++
 # -static: bundles system libraries so the .exe runs standalone on Windows
 # -I src: Include src directory for headers
 CXXFLAGS = -std=c++20 -O3 -Wall -Wextra -march=native -flto -DNDEBUG -static -I src
+CFLAGS = -O3 -Wall -Wextra -march=native -flto -DNDEBUG -static -I src -std=gnu99
+
 LDFLAGS = -pthread
 
 SRC_DIR = src
 EVAL_DIR = src/eval
+SYZYGY_DIR = src/syzygy
 OBJ_DIR = obj
-# Added .exe for Windows
 BIN = Aether-C.exe
 
-SRCS = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(EVAL_DIR)/*.cpp)
-OBJS = $(patsubst %.cpp, $(OBJ_DIR)/%.o, $(notdir $(SRCS)))
+SRCS_CXX = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(EVAL_DIR)/*.cpp)
+# Only compile tbprobe.c, tbcore.c is included by tbprobe.c
+SRCS_C = $(SYZYGY_DIR)/tbprobe.c
+
+OBJS = $(patsubst %.cpp, $(OBJ_DIR)/%.o, $(notdir $(SRCS_CXX))) \
+       $(patsubst %.c, $(OBJ_DIR)/%.o, $(notdir $(SRCS_C)))
 
 all: $(BIN)
 
@@ -31,14 +38,17 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 $(OBJ_DIR)/%.o: $(EVAL_DIR)/%.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(OBJ_DIR)/%.o: $(SYZYGY_DIR)/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN)
 
-# Debug build (Includes debug symbols, disables optimization)
-debug:
-	$(CXX) -std=c++20 -O0 -g -Wall -Wextra -march=native -I src $(SRCS) -o $(BIN) $(LDFLAGS)
+debug: CXXFLAGS = -std=c++20 -O0 -g -Wall -Wextra -march=native -I src
+debug: CFLAGS = -O0 -g -Wall -Wextra -march=native -I src -std=gnu99
+debug: $(BIN)
 
 .PHONY: all clean debug
