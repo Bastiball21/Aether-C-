@@ -166,7 +166,8 @@ public:
             }
 
             if (see_score >= 0) {
-                scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva + see_score + capture_history;
+                // Use MVV-LVA primarily for sorting good captures
+                scores[i] = SCORE_GOOD_CAPTURE_BASE + mvv_lva * 1024 + capture_history;
                 is_bad_capture[i] = false;
             } else {
                 scores[i] = SCORE_BAD_CAPTURE_BASE + mvv_lva + see_score + capture_history;
@@ -591,7 +592,8 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
 
     // Singular Extensions
     int singular_ext = 0;
-    if (Search::UseSingular && !is_pv && depth >= 8 && tt_move != 0 && tte.bound() == 3 && tte.depth >= depth - 3 && excluded_move == 0) {
+    // Modified: removed !is_pv to allow SE in PV nodes
+    if (Search::UseSingular && depth >= 8 && tt_move != 0 && tte.bound() == 3 && tte.depth >= depth - 3 && excluded_move == 0) {
         int tt_score = score_from_tt(tte.score, ply);
         int margin = SearchParams::SINGULAR_MARGIN * depth;
         int singular_beta = tt_score - margin;
@@ -613,15 +615,24 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
             int score = -negamax(pos, depth - R, -beta, -beta + 1, ply + 1, false, 0, 0);
             pos.unmake_null_move();
             if (stop_flag) return 0;
-            if (score >= beta) return beta;
+            if (score >= beta) {
+                // Modified: Verification search for deep null moves
+                if (depth >= 12 && score < MATE_SCORE - MAX_PLY) {
+                    score = -negamax(pos, depth - R, -beta, -beta + 1, ply, false, prev_move, 0);
+                    if (score < beta) goto skip_nmp;
+                }
+                return beta;
+            }
         }
+    }
+    skip_nmp:
 
         // Razoring (depth <= 2)
         if (depth <= 2 && static_eval + SearchParams::RAZORING_MARGIN < alpha) {
              int qscore = quiescence(pos, alpha, beta, ply);
              if (qscore < alpha) return alpha;
         }
-    }
+
 
     MovePicker mp(pos, *this, tt_move, ply, prev_move);
     uint16_t move;
@@ -657,6 +668,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         }
 
         moves_searched++;
+        bool gives_check = pos.in_check(); // Added check status after move
 
         int score;
         if (moves_searched == 1) {
@@ -664,7 +676,8 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         } else {
             // LMR
             int reduction = 0;
-            if (depth >= 3 && moves_searched > 1 && !in_check && is_quiet) {
+            // Modified: Don't reduce if move gives check
+            if (depth >= 3 && moves_searched > 1 && !in_check && is_quiet && !gives_check) {
                 int d = std::min(depth, 63);
                 int m = std::min(moves_searched, 63);
                 reduction = LMRTable[d][m];
@@ -769,6 +782,11 @@ void SearchWorker::iter_deep() {
                 root_moves.push_back({m, -INFINITY_SCORE, -INFINITY_SCORE});
             }
         }
+    }
+
+    // Modified: Check if empty
+    if (root_moves.empty()) {
+        return;
     }
 
     // 2. Iterative Loop
@@ -950,7 +968,8 @@ void Search::start(Position& pos, const SearchLimits& limits) {
              if (allocated_time_limit > t - 50) allocated_time_limit = t - 50;
          }
     } else if (limits.move_time > 0) {
-        allocated_time_limit = limits.move_time - 10;
+        // Modified: Use move_overhead_ms
+        allocated_time_limit = limits.move_time - limits.move_overhead_ms;
     }
 
     TTable.new_search();
