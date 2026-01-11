@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
 
     while (std::getline(std::cin, line)) {
         std::stringstream ss(line);
-        ss >> token;
+        if (!(ss >> token)) continue;
 
         if (token == "uci") {
             std::cout << "id name Aether-C\n";
