@@ -70,10 +70,10 @@ namespace Syzygy {
         unsigned wdl = TB_GET_WDL(results);
 
         int wdl_score = 0;
-        if (wdl == TB_WIN) wdl_score = 30500;
-        else if (wdl == TB_LOSS) wdl_score = -30500;
-        else if (wdl == TB_CURSED_WIN) wdl_score = 20000;
-        else if (wdl == TB_BLESSED_LOSS) wdl_score = -20000;
+        if (wdl == TB_WIN) wdl_score = 20000;
+        else if (wdl == TB_LOSS) wdl_score = -20000;
+        else if (wdl == TB_CURSED_WIN) wdl_score = 5000; // Cursed wins are less valuable
+        else if (wdl == TB_BLESSED_LOSS) wdl_score = -5000;
         else wdl_score = 0;
 
         score = wdl_score;
@@ -99,10 +99,10 @@ namespace Syzygy {
         if (wdl == TB_RESULT_FAILED) return false;
 
         int val = 0;
-        if (wdl == TB_WIN) val = 30000 - ply;
-        else if (wdl == TB_LOSS) val = -30000 + ply;
-        else if (wdl == TB_CURSED_WIN) val = 10000 - ply;
-        else if (wdl == TB_BLESSED_LOSS) val = -10000 + ply;
+        if (wdl == TB_WIN) val = 20000 - ply;
+        else if (wdl == TB_LOSS) val = -20000 + ply;
+        else if (wdl == TB_CURSED_WIN) val = 5000 - ply;
+        else if (wdl == TB_BLESSED_LOSS) val = -5000 + ply;
         else val = 0;
 
         score = val;

@@ -173,6 +173,7 @@ int main(int argc, char* argv[]) {
                         Eval::set_contempt(OptContempt);
                     } else if (name == "SyzygyPath") {
                         OptSyzygyPath = value;
+                        join_search();
                         Syzygy::set_path(OptSyzygyPath);
                     } else if (name == "UCI_Chess960") {
                         OptChess960 = (value == "true");

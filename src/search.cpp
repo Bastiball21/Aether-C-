@@ -743,10 +743,13 @@ void SearchWorker::iter_deep() {
         int tb_score = 0;
         if (Syzygy::probe_root(pos, tb_move, tb_score)) {
              // Found a winning/losing/drawing move from TB
-             std::string s_score = (tb_score > 0) ? "mate 1" : ((tb_score < 0) ? "mate -1" : "cp 0");
-             if (abs(tb_score) < 20000 && abs(tb_score) > 0) s_score = "cp " + std::to_string(tb_score); // Cursed/Blessed
+             std::string score_str = "cp " + std::to_string(tb_score);
+             if (std::abs(tb_score) > 30000) {
+                 int mate = (MATE_SCORE - std::abs(tb_score) + 1) / 2;
+                 score_str = "mate " + std::to_string(tb_score > 0 ? mate : -mate);
+             }
 
-             std::cout << "info depth 1 score " << s_score << " nodes 0 time 0 pv " << move_to_uci(tb_move) << "\n";
+             std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << move_to_uci(tb_move) << "\n";
              std::cout << "bestmove " << move_to_uci(tb_move) << "\n";
              return;
         }
