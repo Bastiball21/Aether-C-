@@ -3,6 +3,8 @@
 #include "movegen.h"
 #include "tt.h"
 #include "see.h"
+#include "syzygy.h"
+#include "search_params.h"
 #include <iostream>
 #include <chrono>
 #include <algorithm>
@@ -31,7 +33,8 @@ void init_lmr() {
         for (int m = 0; m < 64; m++) {
             if (d < 3 || m < 2) LMRTable[d][m] = 0;
             else {
-                LMRTable[d][m] = (int)(0.75 + log(d) * log(m) / 2.25);
+                // Tuned LMR formula
+                LMRTable[d][m] = (int)(SearchParams::LMR_BASE + log(d) * log(m) / SearchParams::LMR_DIVISOR);
             }
         }
     }
@@ -46,7 +49,7 @@ bool Search::UseHistory = true;
 
 const int INFINITY_SCORE = 32000;
 const int MATE_SCORE = 31000;
-const int MAX_HISTORY = 16384;
+const int MAX_HISTORY = SearchParams::HISTORY_MAX;
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -157,7 +160,6 @@ public:
 
             int capture_history = 0;
             if (Search::UseHistory) {
-                // ... (Capture History Logic) ...
                 int v_pt = (flag == 5) ? 0 : ((victim != NO_PIECE) ? victim % 6 : 0);
                 int a_pt = attacker % 6;
                 capture_history = worker.CaptureHistory[pos.side_to_move()][a_pt][m & 0x3F][v_pt];
@@ -410,22 +412,15 @@ void SearchWorker::clear_history() {
 }
 
 void SearchWorker::decay_history() {
-    // Decay History (divided by 2?)
-    // Aether implementation used *3/4
-    // Let's stick to reference Aether logic for now but simpler loop
-    // auto decay = [](int& val) { val = (val * 15) / 16; };
-
-    // Simplified decay logic (just clearing/halving occasionally is enough for shorter TC)
-    // But for proper play:
+    // Decay History (1/16 decay factor)
     for (int i = 0; i < 2; ++i) {
         for (int j = 0; j < 6; ++j) {
             for (int k = 0; k < 64; ++k) {
-                History[i][j][k] = (History[i][j][k] * 3) / 4;
-                for (int l = 0; l < 6; ++l) CaptureHistory[i][j][k][l] = (CaptureHistory[i][j][k][l] * 3) / 4;
+                History[i][j][k] = (History[i][j][k] * (SearchParams::HISTORY_DECAY - 1)) / SearchParams::HISTORY_DECAY;
+                for (int l = 0; l < 6; ++l) CaptureHistory[i][j][k][l] = (CaptureHistory[i][j][k][l] * (SearchParams::HISTORY_DECAY - 1)) / SearchParams::HISTORY_DECAY;
             }
         }
     }
-    // ... ContHistory is heavy to iterate.
 }
 
 void SearchWorker::update_history(int side, int pt, int to, int bonus) {
@@ -468,17 +463,37 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
     if (!in_check) {
         stand_pat = Eval::evaluate_light(pos);
         if (stand_pat >= beta) return beta;
+
+        // Delta Pruning
+        const int DELTA = SearchParams::DELTA_MARGIN;
+        if (stand_pat < alpha - DELTA) {
+             // Promos? We should check if we have promos.
+             // If stand_pat is VERY low, even a queen capture won't help.
+             return alpha;
+        }
+
         if (stand_pat > alpha) alpha = stand_pat;
     }
 
-    // If in check, we must generate all evasions (captures + quiets), so caps_only=false.
-    // If not in check, QSearch only examines captures, so caps_only=true.
+    // Syzygy TB Probe in QSearch? Usually only in main search.
+    // But if we are in endgame, maybe?
+    // Usually Syzygy is probed in main search loop.
+
     MovePicker mp(pos, *this, !in_check, !in_check);
     uint16_t move;
     int moves_searched = 0;
 
     while ((move = mp.next())) {
         if (pos.piece_on((Square)((move >> 6) & 0x3F)) == NO_PIECE) continue;
+
+        // Futility / SEE pruning in QSearch
+        // Only if not in check
+        if (!in_check) {
+             // SEE check for captures
+             int see_val = see(pos, move);
+             if (see_val < 0) continue;
+        }
+
         pos.make_move(move);
         if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
             pos.unmake_move(move);
@@ -526,6 +541,27 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
 
     if (depth <= 0) return quiescence(pos, alpha, beta, ply);
 
+    // Syzygy Probing
+    if (Syzygy::enabled() && !excluded_move) {
+         int tb_score;
+         if (Syzygy::probe_wdl(pos, tb_score, ply)) {
+             // If we get a valid TB score, we can use it.
+             // TB return is like mate score.
+             if (tb_score > 0) { // Win
+                 if (tb_score >= beta) return tb_score;
+                 if (tb_score > alpha) alpha = tb_score;
+             } else if (tb_score < 0) { // Loss
+                 if (tb_score <= alpha) return tb_score;
+                 if (tb_score < beta) beta = tb_score;
+             } else { // Draw
+                 if (0 <= alpha) return 0;
+                 if (0 >= beta) return 0;
+                 alpha = 0; beta = 0; // Exact 0
+                 return 0;
+             }
+         }
+    }
+
     // TT Probe
     TTEntry tte;
     uint16_t tt_move = 0;
@@ -541,8 +577,9 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         }
     }
 
-    // IID
+    // IID (Internal Iterative Deepening)
     if (depth >= 5 && tt_move == 0 && is_pv) {
+        // Reduced depth search to find a move
         negamax(pos, depth - 2, alpha, beta, ply, false, prev_move, 0);
         if (TTable.probe(pos.key(), tte)) {
             tt_move = tte.move;
@@ -556,24 +593,22 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
     int singular_ext = 0;
     if (Search::UseSingular && !is_pv && depth >= 8 && tt_move != 0 && tte.bound() == 3 && tte.depth >= depth - 3 && excluded_move == 0) {
         int tt_score = score_from_tt(tte.score, ply);
-        int margin = 2 * depth;
+        int margin = SearchParams::SINGULAR_MARGIN * depth;
         int singular_beta = tt_score - margin;
         int score = negamax(pos, (depth - 1) / 2, singular_beta - 1, singular_beta, ply, false, prev_move, tt_move);
         if (score < singular_beta) {
              singular_ext = 1;
-        } else if (score >= singular_beta) {
-             // Multi-cut?
         }
     }
 
     // Pruning (Non-PV)
     if (!is_pv && !in_check) {
         // Reverse Futility (Static Null Move)
-        if (depth <= 3 && static_eval - 100 * depth >= beta) return static_eval;
+        if (depth <= 7 && static_eval - SearchParams::RFP_MARGIN * depth >= beta) return static_eval;
 
         // Null Move Pruning
-        if (Search::UseNMP && null_allowed && depth >= 3 && static_eval >= beta && pos.non_pawn_material(pos.side_to_move()) >= 300) {
-            int R = 3 + depth / 4;
+        if (Search::UseNMP && null_allowed && depth >= SearchParams::NMP_DEPTH_LIMIT && static_eval >= beta && pos.non_pawn_material(pos.side_to_move()) >= 300) {
+            int R = SearchParams::NMP_BASE_REDUCTION + depth / SearchParams::NMP_DIVISOR;
             pos.make_null_move();
             int score = -negamax(pos, depth - R, -beta, -beta + 1, ply + 1, false, 0, 0);
             pos.unmake_null_move();
@@ -582,7 +617,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         }
 
         // Razoring (depth <= 2)
-        if (depth <= 2 && static_eval + 300 < alpha) {
+        if (depth <= 2 && static_eval + SearchParams::RAZORING_MARGIN < alpha) {
              int qscore = quiescence(pos, alpha, beta, ply);
              if (qscore < alpha) return alpha;
         }
@@ -609,6 +644,12 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
             if (moves_searched > lmp_threshold) break;
         }
 
+        // Futility Pruning (Quiet only)
+        if (!is_pv && !in_check && is_quiet && depth < 5 && moves_searched > 0) {
+             int fmargin = SearchParams::FUTILITY_MARGIN * depth;
+             if (static_eval + fmargin <= alpha) break; // Prune remaining quiets
+        }
+
         pos.make_move(move);
         if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
             pos.unmake_move(move);
@@ -616,7 +657,6 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         }
 
         moves_searched++;
-        // bool gives_check = pos.in_check();
 
         int score;
         if (moves_searched == 1) {
@@ -630,6 +670,8 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
                 reduction = LMRTable[d][m];
                 if (is_killer) reduction -= 1;
                 if (!is_pv) reduction += 1;
+                // Reduce less if we have good history
+                // if (history > ...) reduction--;
                 if (reduction < 0) reduction = 0;
             }
 
@@ -694,6 +736,23 @@ struct RootMove {
 
 void SearchWorker::iter_deep() {
     Position& pos = root_pos;
+
+    // Syzygy Root Probe
+    if (Syzygy::enabled()) {
+        uint16_t tb_move = 0;
+        int tb_score = 0;
+        if (Syzygy::probe_root(pos, tb_move, tb_score)) {
+             // Found a winning/losing/drawing move from TB
+             if (thread_id == 0) {
+                 std::string s_score = (tb_score > 0) ? "mate 1" : ((tb_score < 0) ? "mate -1" : "cp 0");
+                 if (abs(tb_score) < 20000 && abs(tb_score) > 0) s_score = "cp " + std::to_string(tb_score); // Cursed/Blessed
+
+                 std::cout << "info depth 1 score " << s_score << " nodes 0 time 0 pv " << move_to_uci(tb_move) << "\n";
+                 std::cout << "bestmove " << move_to_uci(tb_move) << "\n";
+             }
+             return;
+        }
+    }
 
     // 1. Generate Root Moves
     MoveGen::MoveList ml;

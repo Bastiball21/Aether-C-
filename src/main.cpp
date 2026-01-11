@@ -11,6 +11,7 @@
 #include "perft.h"
 #include "eval/eval.h"
 #include "eval/eval_tune.h"
+#include "syzygy.h"
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
@@ -71,6 +72,7 @@ int OptHash = 64;
 int OptThreads = 1;
 int OptMoveOverhead = 10;
 int OptContempt = 0;
+std::string OptSyzygyPath = "";
 bool OptChess960 = false;
 bool OptNullMove = true;
 bool OptProbCut = true;
@@ -131,6 +133,7 @@ int main(int argc, char* argv[]) {
             std::cout << "option name Threads type spin default 1 min 1 max 64\n";
             std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000\n";
             std::cout << "option name Contempt type spin default 0 min -200 max 200\n";
+            std::cout << "option name SyzygyPath type string default <empty>\n";
             std::cout << "option name UCI_Chess960 type check default false\n";
             std::cout << "option name NullMove type check default true\n";
             std::cout << "option name ProbCut type check default true\n";
@@ -158,6 +161,9 @@ int main(int argc, char* argv[]) {
                     } else if (name == "Contempt") {
                         OptContempt = std::stoi(value);
                         Eval::set_contempt(OptContempt);
+                    } else if (name == "SyzygyPath") {
+                        OptSyzygyPath = value;
+                        Syzygy::set_path(OptSyzygyPath);
                     } else if (name == "UCI_Chess960") {
                         OptChess960 = (value == "true");
                     } else if (name == "NullMove") {
