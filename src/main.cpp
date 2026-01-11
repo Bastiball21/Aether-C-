@@ -149,7 +149,17 @@ int main(int argc, char* argv[]) {
                 ss >> name;
                 while (ss >> token && token != "value") name += " " + token; // Handle spaces in name if any
                 if (token == "value") {
-                    ss >> value;
+                    // Consume remaining line for value to support paths with spaces
+                    std::string remainder;
+                    std::getline(ss, remainder);
+                    // Trim leading whitespace
+                    size_t first = remainder.find_first_not_of(" \t");
+                    if (first != std::string::npos) value = remainder.substr(first);
+                    else value = "";
+                    // Trim trailing whitespace (optional but good practice)
+                    size_t last = value.find_last_not_of(" \t");
+                    if (last != std::string::npos) value = value.substr(0, last + 1);
+
                     if (name == "Hash") {
                         OptHash = std::stoi(value);
                         join_search();

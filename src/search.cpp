@@ -737,19 +737,17 @@ struct RootMove {
 void SearchWorker::iter_deep() {
     Position& pos = root_pos;
 
-    // Syzygy Root Probe
-    if (Syzygy::enabled()) {
+    // Syzygy Root Probe (Master Only)
+    if (thread_id == 0 && Syzygy::enabled()) {
         uint16_t tb_move = 0;
         int tb_score = 0;
         if (Syzygy::probe_root(pos, tb_move, tb_score)) {
              // Found a winning/losing/drawing move from TB
-             if (thread_id == 0) {
-                 std::string s_score = (tb_score > 0) ? "mate 1" : ((tb_score < 0) ? "mate -1" : "cp 0");
-                 if (abs(tb_score) < 20000 && abs(tb_score) > 0) s_score = "cp " + std::to_string(tb_score); // Cursed/Blessed
+             std::string s_score = (tb_score > 0) ? "mate 1" : ((tb_score < 0) ? "mate -1" : "cp 0");
+             if (abs(tb_score) < 20000 && abs(tb_score) > 0) s_score = "cp " + std::to_string(tb_score); // Cursed/Blessed
 
-                 std::cout << "info depth 1 score " << s_score << " nodes 0 time 0 pv " << move_to_uci(tb_move) << "\n";
-                 std::cout << "bestmove " << move_to_uci(tb_move) << "\n";
-             }
+             std::cout << "info depth 1 score " << s_score << " nodes 0 time 0 pv " << move_to_uci(tb_move) << "\n";
+             std::cout << "bestmove " << move_to_uci(tb_move) << "\n";
              return;
         }
     }

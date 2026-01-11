@@ -9,12 +9,19 @@ namespace Syzygy {
     bool is_inited = false;
 
     void set_path(const std::string& path) {
-        if (path.empty()) return;
-        is_inited = tb_init(path.c_str());
-        if (is_inited) {
+        if (path.empty()) {
+            is_inited = false;
+            // Optionally free Fathom resources if needed, but Fathom doesn't expose tb_free easily.
+            // Just marking it disabled is enough for engine logic.
+            return;
+        }
+        bool success = tb_init(path.c_str());
+        if (success && TB_LARGEST > 0) {
+            is_inited = true;
             std::cout << "info string Syzygy found " << TB_LARGEST << "-man TBs" << std::endl;
         } else {
-            std::cout << "info string Syzygy initialization failed" << std::endl;
+            is_inited = false; // Ensure it stays disabled if init failed or empty TBs
+            std::cout << "info string Syzygy initialization failed or no TBs found" << std::endl;
         }
     }
 
