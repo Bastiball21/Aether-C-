@@ -1,0 +1,2 @@
+info string NNUE Loaded: nn-aether.nnue Features=HalfKP(41024) L1=32 L2=32
+go depth 5

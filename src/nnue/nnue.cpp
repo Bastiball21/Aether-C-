@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <cstring>
+#include <vector>
 
 namespace NNUE {
 
@@ -21,100 +22,156 @@ namespace NNUE {
         return file.good();
     }
 
+    // Helper: Read buffer for Array (fixed size)
+    template<typename T, size_t N>
+    bool read_array(std::ifstream& file, std::array<T, N>& buffer) {
+        file.read(reinterpret_cast<char*>(buffer.data()), N * sizeof(T));
+        return file.good();
+    }
+
     bool load_network(const std::string& path) {
         std::ifstream file(path, std::ios::binary);
-        if (!file.is_open()) return false;
-
-        // Header Check (Stockfish .nnue)
-        uint32_t header_magic;
-        file.read(reinterpret_cast<char*>(&header_magic), sizeof(uint32_t));
-
-        // Let's try to seek past header if magic matches.
-        if (header_magic == 0x7AF32F20) {
-            // Version.
-            uint32_t version;
-            file.read(reinterpret_cast<char*>(&version), 4);
-            uint32_t hash;
-            file.read(reinterpret_cast<char*>(&hash), 4);
-            uint32_t desc_len;
-            file.read(reinterpret_cast<char*>(&desc_len), 4);
-            file.seekg(desc_len, std::ios::cur); // Skip description
-        } else {
-            // Reset to beginning if not magic
-             file.seekg(0, std::ios::beg);
+        if (!file.is_open()) {
+            std::cerr << "NNUE: Could not open file " << path << std::endl;
+            return false;
         }
 
-        // Feature Transformer Layer
-        // Expect Hash
-        uint32_t hash;
-        file.read(reinterpret_cast<char*>(&hash), 4); // Layer Hash
+        // Header
+        uint32_t magic;
+        file.read(reinterpret_cast<char*>(&magic), sizeof(uint32_t));
+
+        if (magic != 0x7AF32F16 && magic != 0x7AF32F20) {
+            std::cerr << "NNUE: Invalid Magic: " << std::hex << magic << std::dec << std::endl;
+            return false;
+        }
+
+        uint32_t version;
+        file.read(reinterpret_cast<char*>(&version), 4);
+
+        uint32_t desc_len;
+        file.read(reinterpret_cast<char*>(&desc_len), 4);
+
+        // Skip Description
+        file.seekg(desc_len, std::ios::cur);
+
+        uint32_t net_hash;
+        file.read(reinterpret_cast<char*>(&net_hash), 4);
+
+        // Transformer Hash (extra u32 that was missing in previous code)
+        uint32_t trans_hash;
+        file.read(reinterpret_cast<char*>(&trans_hash), 4);
+
+        // Feature Transformer Blob
+        // Order: Biases then Weights (Standard HalfKP)
 
         // Read Biases (256 * int16)
-        if (!read_buffer(file, GlobalNetwork.ft_biases, kFeatureTransformerOutput)) return false;
+        if (!read_buffer(file, GlobalNetwork.ft_biases, kFeatureTransformerOutput)) {
+            std::cerr << "NNUE: Failed to read FT biases" << std::endl;
+            return false;
+        }
 
-        // Read Weights (64 * 768 * 256 * int16)
-        size_t ft_weights_count = 64 * 768 * kFeatureTransformerOutput;
-        if (!read_buffer(file, GlobalNetwork.ft_weights, ft_weights_count)) return false;
+        // Read Weights (41024 * 256 * int16)
+        size_t ft_weights_count = kFeatureDim * kFeatureTransformerOutput;
+        if (!read_buffer(file, GlobalNetwork.ft_weights, ft_weights_count)) {
+            std::cerr << "NNUE: Failed to read FT weights" << std::endl;
+            return false;
+        }
+
+        // Layers - No hashes between layers
 
         // Layer 1 (Affine 512->32)
-        file.read(reinterpret_cast<char*>(&hash), 4);
-        GlobalNetwork.layer1.resize();
-        if (!read_buffer(file, GlobalNetwork.layer1.biases, 32)) return false;
-        if (!read_buffer(file, GlobalNetwork.layer1.weights, 32 * 512)) return false;
+        // Biases (32 int32)
+        if (!read_buffer(file, GlobalNetwork.layer1.biases, 32)) {
+            std::cerr << "NNUE: Failed to read L1 biases" << std::endl;
+            return false;
+        }
+        // Weights (32 * 512 int8)
+        if (!read_buffer(file, GlobalNetwork.layer1.weights, 32 * 512)) {
+            std::cerr << "NNUE: Failed to read L1 weights" << std::endl;
+            return false;
+        }
 
         // Layer 2 (Affine 32->32)
-        file.read(reinterpret_cast<char*>(&hash), 4);
-        GlobalNetwork.layer2.resize();
-        if (!read_buffer(file, GlobalNetwork.layer2.biases, 32)) return false;
-        if (!read_buffer(file, GlobalNetwork.layer2.weights, 32 * 32)) return false;
+        // Biases (32 int32)
+        if (!read_buffer(file, GlobalNetwork.layer2.biases, 32)) {
+            std::cerr << "NNUE: Failed to read L2 biases" << std::endl;
+            return false;
+        }
+        // Weights (32 * 32 int8)
+        if (!read_buffer(file, GlobalNetwork.layer2.weights, 32 * 32)) {
+             std::cerr << "NNUE: Failed to read L2 weights" << std::endl;
+             return false;
+        }
 
         // Output (Affine 32->1)
-        file.read(reinterpret_cast<char*>(&hash), 4);
-        GlobalNetwork.output.resize();
-        if (!read_buffer(file, GlobalNetwork.output.biases, 1)) return false;
-        if (!read_buffer(file, GlobalNetwork.output.weights, 32)) return false;
+        // Biases (1 int32)
+        if (!read_buffer(file, GlobalNetwork.output.biases, 1)) {
+            std::cerr << "NNUE: Failed to read Output biases" << std::endl;
+            return false;
+        }
+        // Weights (1 * 32 int8)
+        if (!read_buffer(file, GlobalNetwork.output.weights, 32)) {
+            std::cerr << "NNUE: Failed to read Output weights" << std::endl;
+            return false;
+        }
 
         IsLoaded = true;
+        std::cout << "info string NNUE Loaded: " << path << " Features=HalfKP(41024) L1=32 L2=32" << std::endl;
         return true;
     }
 
-    void refresh_accumulator(const Position& pos, Color c, Accumulator& acc) {
-        // Init with bias
+    void refresh_accumulator(const Position& pos, Color perspective, Accumulator& acc) {
+        if (!IsLoaded) return;
+
+        // Init with FT Biases
         acc.init(GlobalNetwork.ft_biases.data());
 
-        // Get King Square for bucket
-        Bitboard k_bb = pos.pieces(KING, c);
-        if (!k_bb) return; // Should not happen in valid position
+        Square king_sq = Bitboards::lsb(pos.pieces(KING, perspective));
 
-        Square k_sq = Bitboards::lsb(k_bb);
-        int k_bucket = king_bucket(k_sq, c);
+        // 1. Add King Bias Feature
+        int bias_idx = bias_index(king_sq, perspective);
+        const int16_t* bias_w = GlobalNetwork.ft_weights.data() + (bias_idx * kFeatureTransformerOutput);
+        for (int i = 0; i < kFeatureTransformerOutput; ++i) {
+            acc.values[i] += bias_w[i];
+        }
 
-        // Pointer to weights for this bucket
-        const int16_t* bucket_weights = GlobalNetwork.ft_weights.data() +
-                                        (k_bucket * 768 * kFeatureTransformerOutput);
-
+        // 2. Add Piece Features
         Bitboard occ = pos.pieces();
         while (occ) {
             Square s = (Square)Bitboards::pop_lsb(occ);
             Piece p = pos.piece_on(s);
 
-            // Skip own king
-            if ((p == W_KING && c == WHITE) || (p == B_KING && c == BLACK)) continue;
+            // Skip Kings (kings are not features in HalfKP(Friend), except via the bias)
+            if (p == W_KING || p == B_KING) continue;
 
             // Calculate feature index
-            int idx;
-            if (c == WHITE) {
-                idx = feature_index(p, s);
-            } else {
-                idx = feature_index_mirrored(p, s);
-            }
+            int idx = feature_index(king_sq, p, s, perspective);
 
-            // Add weights
-            const int16_t* w = bucket_weights + (idx * kFeatureTransformerOutput);
-            for (int i = 0; i < kFeatureTransformerOutput; ++i) {
-                acc.values[i] += w[i];
+            if (idx != -1) {
+                 const int16_t* w = GlobalNetwork.ft_weights.data() + (idx * kFeatureTransformerOutput);
+                 for (int i = 0; i < kFeatureTransformerOutput; ++i) {
+                     acc.values[i] += w[i];
+                 }
             }
         }
+    }
+
+    // Helper to add/remove feature
+    inline void update_feature(Accumulator& acc, int idx, bool add) {
+         const int16_t* w = GlobalNetwork.ft_weights.data() + (idx * kFeatureTransformerOutput);
+         if (add) {
+             for (int i = 0; i < kFeatureTransformerOutput; ++i) {
+                 acc.values[i] += w[i];
+             }
+         } else {
+             for (int i = 0; i < kFeatureTransformerOutput; ++i) {
+                 acc.values[i] -= w[i];
+             }
+         }
+    }
+
+    void update_accumulator(const Position&, Color, const Position::StateInfo*, Position::StateInfo*) {
+        // Deprecated/Unused - Logic moved to Position::make_move
     }
 
     // Forward pass
@@ -124,12 +181,12 @@ namespace NNUE {
         const Position::StateInfo* st = pos.state();
         Color stm = pos.side_to_move();
 
-        const Accumulator& acc_us = (stm == WHITE) ? st->accumulators[WHITE] : st->accumulators[BLACK];
-        const Accumulator& acc_them = (stm == WHITE) ? st->accumulators[BLACK] : st->accumulators[WHITE];
+        const Accumulator& acc_us = st->accumulators[stm];
+        const Accumulator& acc_them = st->accumulators[~stm];
 
         // Prepare input for Layer 1: 512 int8_t
         // Clamp accumulators [0..127]
-        std::array<int8_t, 512> input;
+        alignas(64) std::array<int8_t, 512> input;
 
         for (int i = 0; i < 256; ++i) {
             input[i] = static_cast<int8_t>(clamp_output(acc_us.values[i]));
@@ -137,23 +194,23 @@ namespace NNUE {
         }
 
         // Layer 1
-        std::array<int32_t, 32> l1_out;
-        std::array<int8_t, 32> l1_out_clamped;
+        alignas(64) std::array<int32_t, 32> l1_out;
+        alignas(64) std::array<int8_t, 32> l1_out_clamped;
 
         for (int i = 0; i < 32; ++i) {
             int32_t sum = GlobalNetwork.layer1.biases[i];
-            // Dot product
             const int8_t* row = GlobalNetwork.layer1.weights.data() + (i * 512);
+            // Vectorize? Compiler -O3 should handle simple loops.
             for (int j = 0; j < 512; ++j) {
                 sum += row[j] * input[j];
             }
             l1_out[i] = sum;
-            l1_out_clamped[i] = static_cast<int8_t>(clamp_output(sum >> 6)); // Shift? Usually shift 6 for L1
+            l1_out_clamped[i] = static_cast<int8_t>(clamp_output(sum >> 6));
         }
 
         // Layer 2
-        std::array<int32_t, 32> l2_out;
-        std::array<int8_t, 32> l2_out_clamped;
+        alignas(64) std::array<int32_t, 32> l2_out;
+        alignas(64) std::array<int8_t, 32> l2_out_clamped;
 
         for (int i = 0; i < 32; ++i) {
             int32_t sum = GlobalNetwork.layer2.biases[i];
@@ -172,23 +229,7 @@ namespace NNUE {
             sum += row[j] * l2_out_clamped[j];
         }
 
-        // Scale? Usually output is roughly in cp * CONST.
-        // SF output is scaled.
-        // Let's return raw sum / shift?
-        // Usually output shift is related to quantization.
-        // Assuming the trainer output matches expected CP range.
-        // Typically output needs to be divided.
-        // Common is / 16 or similar.
-        // Let's assume the network outputs approx cp value after basic shift.
-        // But with quantization:
-        // L1: x * w -> shift 6
-        // L2: x * w -> shift 6
-        // Out: x * w -> no shift? or shift?
-        // Stockfish uses `output_bucket` sometimes.
-        // Let's assume standard `score / 16` or similar.
-        // The standard scaling is `sum * 1 / FV_SCALE`.
-        // Let's try `sum / 16` (>> 4).
-
+        // Scale Output
         return sum / 16;
     }
 

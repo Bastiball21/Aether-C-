@@ -14,9 +14,8 @@ namespace NNUE {
         // Feature Transformer
         // 256 biases
         std::vector<int16_t> ft_biases;
-        // 64 buckets * 768 features * 256 outputs
-        // Layout: [KingBucket][FeatureIdx][OutputIdx]
-        // This is large (~25MB).
+
+        // HalfKP weights: 41024 * 256
         std::vector<int16_t> ft_weights;
 
         // Layer 1: 512 -> 32
@@ -45,13 +44,8 @@ namespace NNUE {
     // Helper to refresh one side's accumulator from scratch.
     void refresh_accumulator(const Position& pos, Color c, Accumulator& acc);
 
-    // Helper to update accumulators incrementally
-    // Returns true if update was possible, false if full refresh needed (e.g. King moved)
-    // Actually, logic is usually handled in Position::make_move.
-    // This function calculates the diff.
-    // However, given the Position structure, we will implement the logic inside Position methods
-    // utilizing these helpers or directly.
-    // For now, expose basic access.
+    // Update accumulators for a single perspective
+    void update_accumulator(const Position& pos, Color perspective, const Position::StateInfo* old_st, Position::StateInfo* new_st);
 
 } // namespace NNUE
 

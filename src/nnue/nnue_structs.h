@@ -8,18 +8,11 @@ namespace NNUE {
 
     // Constants for NNUE Architecture
     constexpr int kFeatureTransformerOutput = 256;
+    constexpr int kFeatureDim = 41024;
     constexpr int kHiddenLayer1Size = 32;
     constexpr int kHiddenLayer2Size = 32;
 
-    // Quantization
-    // Accumulators are int16. ClippedReLU clamps to [0, 127] (QA=255?).
-    // Usually Stockfish uses shift=6 for input?
-    // Let's assume standard behavior:
-    // FT Weights: int16
-    // Accumulators: int16
-    // Layer1 Weights: int8
-    // Layer1 Biases: int32
-    // Output of Layer1: int8 (clamped)
+    constexpr int kHalfKP_KingSqBias = 40960;
 
     struct Accumulator {
         std::array<int16_t, kFeatureTransformerOutput> values;
