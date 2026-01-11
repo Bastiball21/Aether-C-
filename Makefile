@@ -13,12 +13,11 @@ LDFLAGS = -pthread
 
 SRC_DIR = src
 EVAL_DIR = src/eval
-NNUE_DIR = src/nnue
 OBJ_DIR = obj
 # Added .exe for Windows
 BIN = Aether-C.exe
 
-SRCS = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(EVAL_DIR)/*.cpp) $(wildcard $(NNUE_DIR)/*.cpp)
+SRCS = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(EVAL_DIR)/*.cpp)
 OBJS = $(patsubst %.cpp, $(OBJ_DIR)/%.o, $(notdir $(SRCS)))
 
 all: $(BIN)
@@ -30,9 +29,6 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: $(EVAL_DIR)/%.cpp | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(NNUE_DIR)/%.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ_DIR):

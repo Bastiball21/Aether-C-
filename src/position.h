@@ -3,7 +3,6 @@
 
 #include "types.h"
 #include "bitboard.h"
-#include "nnue/nnue_structs.h"
 #include <string>
 #include <vector>
 
@@ -19,9 +18,6 @@ public:
         Square ep_square;
         int rule50;
         Piece captured;
-
-        // NNUE Accumulators
-        NNUE::Accumulator accumulators[2]; // 0=White, 1=Black
     };
 
     Position();
