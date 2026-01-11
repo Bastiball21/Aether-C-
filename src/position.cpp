@@ -1,6 +1,4 @@
 #include "position.h"
-#include "nnue/nnue.h"
-#include "nnue/features.h"
 #include <sstream>
 #include <cstring>
 #include <cassert>
@@ -183,12 +181,6 @@ void Position::set(const std::string& fen) {
     si.rule50 = rule50;
     si.captured = NO_PIECE;
 
-    // Refresh NNUE accumulators
-    if (NNUE::IsLoaded) {
-        NNUE::refresh_accumulator(*this, WHITE, si.accumulators[WHITE]);
-        NNUE::refresh_accumulator(*this, BLACK, si.accumulators[BLACK]);
-    }
-
     history.push_back(si);
 }
 
@@ -201,58 +193,6 @@ int Position::non_pawn_material(Color c) const {
     return mat;
 }
 
-// Internal helper to update accumulator
-static void update_acc(NNUE::Accumulator& acc, int k_bucket, int16_t* weights,
-                       Piece p, Square from, Square to, Color perspective) {
-    int idx_rem, idx_add;
-    if (perspective == WHITE) {
-        idx_rem = NNUE::feature_index(p, from);
-        idx_add = NNUE::feature_index(p, to);
-    } else {
-        idx_rem = NNUE::feature_index_mirrored(p, from);
-        idx_add = NNUE::feature_index_mirrored(p, to);
-    }
-
-    // Weights pointer
-    const int16_t* w_rem = weights + (idx_rem * NNUE::kFeatureTransformerOutput);
-    const int16_t* w_add = weights + (idx_add * NNUE::kFeatureTransformerOutput);
-
-    for (int i = 0; i < NNUE::kFeatureTransformerOutput; ++i) {
-        acc.values[i] -= w_rem[i];
-        acc.values[i] += w_add[i];
-    }
-}
-
-static void remove_acc(NNUE::Accumulator& acc, int k_bucket, int16_t* weights,
-                       Piece p, Square sq, Color perspective) {
-    int idx;
-    if (perspective == WHITE) {
-        idx = NNUE::feature_index(p, sq);
-    } else {
-        idx = NNUE::feature_index_mirrored(p, sq);
-    }
-
-    const int16_t* w = weights + (idx * NNUE::kFeatureTransformerOutput);
-    for (int i = 0; i < NNUE::kFeatureTransformerOutput; ++i) {
-        acc.values[i] -= w[i];
-    }
-}
-
-static void add_acc(NNUE::Accumulator& acc, int k_bucket, int16_t* weights,
-                    Piece p, Square sq, Color perspective) {
-    int idx;
-    if (perspective == WHITE) {
-        idx = NNUE::feature_index(p, sq);
-    } else {
-        idx = NNUE::feature_index_mirrored(p, sq);
-    }
-
-    const int16_t* w = weights + (idx * NNUE::kFeatureTransformerOutput);
-    for (int i = 0; i < NNUE::kFeatureTransformerOutput; ++i) {
-        acc.values[i] += w[i];
-    }
-}
-
 void Position::make_move(uint16_t move) {
 #ifndef NDEBUG
     debug_validate();
@@ -260,14 +200,6 @@ void Position::make_move(uint16_t move) {
     Square to = (Square)(move & 0x3F);
     Square from = (Square)((move >> 6) & 0x3F);
     int flag = (move >> 12);
-
-    // Save current accumulators before modification
-    NNUE::Accumulator prev_acc[2];
-    bool use_nnue = NNUE::IsLoaded;
-    if (use_nnue) {
-        prev_acc[WHITE] = history.back().accumulators[WHITE];
-        prev_acc[BLACK] = history.back().accumulators[BLACK];
-    }
 
     StateInfo si;
     si.key = st_key;
@@ -311,20 +243,14 @@ void Position::make_move(uint16_t move) {
     }
 
     // Castling
-    bool castling_move = false;
     Square rook_from = SQ_NONE, rook_to = SQ_NONE;
-    Piece rook_piece = NO_PIECE;
     if (flag == 2) { // King Side
-        castling_move = true;
         rook_from = (side == WHITE) ? SQ_H1 : SQ_H8;
         rook_to = (side == WHITE) ? SQ_F1 : SQ_F8;
-        rook_piece = (side == WHITE) ? W_ROOK : B_ROOK;
         move_piece(rook_from, rook_to);
     } else if (flag == 3) { // Queen Side
-        castling_move = true;
         rook_from = (side == WHITE) ? SQ_A1 : SQ_A8;
         rook_to = (side == WHITE) ? SQ_D1 : SQ_D8;
-        rook_piece = (side == WHITE) ? W_ROOK : B_ROOK;
         move_piece(rook_from, rook_to);
     }
 
@@ -359,81 +285,6 @@ void Position::make_move(uint16_t move) {
     side = ~side;
     st_key ^= Zobrist::side;
 
-    // --- NNUE Update ---
-    if (use_nnue) {
-        // Copy base accumulators
-        si.accumulators[WHITE] = prev_acc[WHITE];
-        si.accumulators[BLACK] = prev_acc[BLACK];
-
-        // Apply updates
-        // Helper to update one accumulator
-        auto do_update = [&](Color perspective) {
-            NNUE::Accumulator& acc = si.accumulators[perspective];
-
-            // 1. King move? Refresh if OWN king moved.
-            bool king_moved = (pt == KING);
-            if (king_moved && perspective == (side == WHITE ? BLACK : WHITE)) { // 'side' is already flipped to STM
-                // Wait, side is now STM (next player).
-                // If I made a move (previous side), and I moved my King.
-                // perspective == previous_side means OWN accumulator for the mover.
-                // side is flipped at end of make_move.
-                // Original side was ~side.
-
-                // Let's use specific color checks.
-                // Mover is ~side.
-                Color mover = ~side;
-                if (perspective == mover) {
-                    // Own King Moved -> Full Refresh
-                    // We need to use the CURRENT position state (after move).
-                    NNUE::refresh_accumulator(*this, perspective, acc);
-                    return; // Done for this perspective
-                }
-            }
-
-            // Get weights pointer for the bucket
-            // Bucket is determined by King Square.
-            // If King didn't move for this perspective, bucket is same.
-            Square k_sq = Bitboards::lsb(pieces(KING, perspective));
-            int k_bucket = NNUE::king_bucket(k_sq, perspective);
-            int16_t* weights = NNUE::GlobalNetwork.ft_weights.data() +
-                               (k_bucket * 768 * NNUE::kFeatureTransformerOutput);
-
-            // 2. Remove Captured Piece
-            if (captured_piece != NO_PIECE) {
-                // If captured piece was KING, game over/illegal, but we handle it.
-                // Actually King capture not possible in legal chess.
-                remove_acc(acc, k_bucket, weights, captured_piece, capture_sq, perspective);
-            }
-
-            // 3. Move Piece (Remove From, Add To)
-            // If King moved (and perspective is Enemy), we update King feature.
-            // If Promotion, we remove Pawn, add Promo.
-            // If Castling, we move Rook too.
-
-            // Primary Piece Logic
-            if (flag & 8) { // Promotion
-                // Remove Pawn
-                remove_acc(acc, k_bucket, weights, p, from, perspective);
-                // Add Promo Piece
-                add_acc(acc, k_bucket, weights, promo_piece, to, perspective);
-            } else {
-                // Regular Move (or Castling King part)
-                // Note: For King move (Enemy perspective), p is King.
-                // p is the piece that moved.
-                // For Castling, p is King.
-                update_acc(acc, k_bucket, weights, p, from, to, perspective);
-            }
-
-            // Castling Rook Logic
-            if (castling_move) {
-                update_acc(acc, k_bucket, weights, rook_piece, rook_from, rook_to, perspective);
-            }
-        };
-
-        do_update(WHITE);
-        do_update(BLACK);
-    }
-
     // Push history
     history.push_back(si);
 }
@@ -446,12 +297,6 @@ void Position::make_null_move() {
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE;
-
-    // Copy NNUE accumulators
-    if (NNUE::IsLoaded && !history.empty()) {
-        si.accumulators[WHITE] = history.back().accumulators[WHITE];
-        si.accumulators[BLACK] = history.back().accumulators[BLACK];
-    }
 
     rule50++;
 
