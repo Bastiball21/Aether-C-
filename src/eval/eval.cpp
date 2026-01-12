@@ -122,6 +122,11 @@ namespace Eval {
                     entry.score_mg += Params.PASSED_PAWN_RANK_BONUS_MG[rel_r] * us_sign;
                     entry.score_eg += Params.PASSED_PAWN_RANK_BONUS_EG[rel_r] * us_sign;
 
+                    if (Bitboards::check_bit(entry.pawn_attacks[c], s) && rel_r >= 3) {
+                        entry.score_mg += Params.PASSED_PAWN_SUPPORTED_BONUS_MG * us_sign;
+                        entry.score_eg += Params.PASSED_PAWN_SUPPORTED_BONUS_EG * us_sign;
+                    }
+
                     // Front squares mask (for blocker penalty later)
                     Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
                     if (front_s >= 0 && front_s < 64) {
@@ -167,6 +172,7 @@ namespace Eval {
         int king_attackers_count[2]; // Number of pieces attacking king zone
         Square king_sq[2];
         Bitboard mobility_area[2]; // Safe squares for mobility
+        Bitboard restricted_pieces[2];
     };
 
     int evaluate_hce(const Position& pos, int alpha, int beta) {
@@ -182,6 +188,7 @@ namespace Eval {
         info.attacked_by[WHITE] = info.attacked_by[BLACK] = 0;
         info.king_attack_units[WHITE] = info.king_attack_units[BLACK] = 0;
         info.king_attackers_count[WHITE] = info.king_attackers_count[BLACK] = 0;
+        info.restricted_pieces[WHITE] = info.restricted_pieces[BLACK] = 0;
 
         // Init King Info
         for (Color c : {WHITE, BLACK}) {
@@ -239,6 +246,32 @@ namespace Eval {
                          }
                     }
 
+                    if (pt != PAWN && pt != KING) {
+                        Bitboard safe_mob = attacks & ~pos.pieces(us);
+                        int mob_cnt = Bitboards::count(safe_mob);
+                        Bitboard pawn_safe_attacks = safe_mob & ~pawn_entry.pawn_attacks[them];
+                        int safe_mob_val = Bitboards::count(pawn_safe_attacks);
+
+                        if (safe_mob_val <= 3) {
+                            if (safe_mob_val <= 1) {
+                                mg -= Params.RESTRICTED_STRICT_PENALTY_MG[pt] * us_sign;
+                                eg -= Params.RESTRICTED_STRICT_PENALTY_EG[pt] * us_sign;
+                            } else {
+                                mg -= Params.RESTRICTED_PENALTY_MG[pt] * us_sign;
+                                eg -= Params.RESTRICTED_PENALTY_EG[pt] * us_sign;
+                            }
+                        }
+
+                        if (safe_mob_val <= 2) {
+                            Bitboards::set_bit(info.restricted_pieces[us], sq);
+                        }
+
+                        if ((pt == KNIGHT || pt == BISHOP) && mob_cnt <= 2) {
+                            mg -= Params.INACTIVE_PENALTY_MG * us_sign;
+                            eg -= Params.INACTIVE_PENALTY_EG * us_sign;
+                        }
+                    }
+
                     // Mobility (Safe)
                     if (pt != PAWN && pt != KING) {
                         Bitboard safe_moves = attacks & info.mobility_area[us];
@@ -273,6 +306,14 @@ namespace Eval {
                     if (pt == BISHOP) {
                         // Bad Bishop: blocked by own pawns
                         // Check if center pawns are on same color?
+                        Bitboard light_sq_mask = 0x55AA55AA55AA55AAULL;
+                        bool bishop_is_light = Bitboards::check_bit(light_sq_mask, sq);
+                        Bitboard my_pawns = pos.pieces(PAWN, us);
+                        Bitboard my_pawns_same_color = my_pawns & (bishop_is_light ? light_sq_mask : ~light_sq_mask);
+                        if (Bitboards::count(my_pawns_same_color) >= 3) {
+                            mg -= Params.BAD_BISHOP_PENALTY_MG * us_sign;
+                            eg -= Params.BAD_BISHOP_PENALTY_EG * us_sign;
+                        }
                     }
                     if (pt == ROOK) {
                         // Open File
@@ -301,6 +342,15 @@ namespace Eval {
                              mg += Params.ROOK_ON_SEVENTH_MG * us_sign;
                              eg += Params.ROOK_ON_SEVENTH_EG * us_sign;
                         }
+
+                        Bitboard passed_on_file = pawn_entry.passed_pawns[us] & file_mask;
+                        if (passed_on_file) {
+                            Square relevant_pawn = (Square)Bitboards::lsb(passed_on_file);
+                            if ((us == WHITE && sq < relevant_pawn) || (us == BLACK && sq > relevant_pawn)) {
+                                mg += Params.ROOK_BEHIND_PASSED_MG * us_sign;
+                                eg += Params.ROOK_BEHIND_PASSED_EG * us_sign;
+                            }
+                        }
                     }
                     if (pt == KNIGHT) {
                         // Outpost
@@ -328,6 +378,24 @@ namespace Eval {
             int blocked_count = Bitboards::count(blocked_passed);
             mg += blocked_count * Params.PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
             eg += blocked_count * Params.PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
+        }
+
+        for (Color us : {WHITE, BLACK}) {
+            Color them = ~us;
+            int us_sign = (us == WHITE) ? 1 : -1;
+            Bitboard targets = info.restricted_pieces[them];
+            while (targets) {
+                Square sq = (Square)Bitboards::pop_lsb(targets);
+                if (Bitboards::check_bit(info.attacked_by[us], sq)) {
+                    if (!Bitboards::check_bit(pawn_entry.pawn_attacks[them], sq)) {
+                        PieceType pt = (PieceType)(pos.piece_on(sq) % 6);
+                        if (pt != NO_PIECE_TYPE && pt != KING && pt != PAWN) {
+                            mg += Params.PRESSURE_BONUS_MG[pt] * us_sign;
+                            eg += Params.PRESSURE_BONUS_EG[pt] * us_sign;
+                        }
+                    }
+                }
+            }
         }
 
         // 3. King Safety
