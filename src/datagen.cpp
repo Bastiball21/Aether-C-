@@ -1,5 +1,6 @@
 #include "datagen.h"
 #include "bitboard.h"
+#include "packed_board.h"
 #include "eval/eval.h"
 #include "movegen.h"
 #include "position.h"
@@ -112,9 +113,7 @@ struct Rng {
 };
 
 struct DatagenRecord {
-    std::string fen;
-    int16_t score_white = 0;
-    float result = 0.5f;
+    PackedBoard board;
 };
 
 struct QueueItem {
@@ -171,11 +170,7 @@ bool is_trivial_endgame(const Position& pos) {
 }
 
 void write_record(std::ofstream& out, const DatagenRecord& record) {
-    uint16_t fen_len = static_cast<uint16_t>(record.fen.size());
-    out.write(reinterpret_cast<const char*>(&record.result), sizeof(record.result));
-    out.write(reinterpret_cast<const char*>(&record.score_white), sizeof(record.score_white));
-    out.write(reinterpret_cast<const char*>(&fen_len), sizeof(fen_len));
-    out.write(record.fen.data(), fen_len);
+    out.write(reinterpret_cast<const char*>(&record.board), sizeof(record.board));
 }
 
 OpeningBook load_epd_book(const std::string& path) {
@@ -617,9 +612,9 @@ void run_datagen(const DatagenConfig& config) {
                     }
 
                     if (should_keep) {
-                        int16_t score_white =
-                            (pos.side_to_move() == WHITE) ? clamped : static_cast<int16_t>(-clamped);
-                        records.push_back({pos.fen(), score_white, 0.5f});
+                        PackedBoard packed{};
+                        pack_position(pos, clamped, 0.5f, packed);
+                        records.push_back({packed});
                     }
 
                     int best_score = 0;
@@ -644,7 +639,7 @@ void run_datagen(const DatagenConfig& config) {
 
                 if (!records.empty()) {
                     for (auto& record : records) {
-                        record.result = result;
+                        set_packed_result(record.board, result);
                     }
 
                     QueueItem item;
@@ -738,10 +733,9 @@ void convert_pgn(const std::string& pgn_path, const std::string& output_path) {
 
             int eval_stm = Eval::evaluate(pos);
             int16_t clamped = clamp_score(eval_stm);
-            int16_t score_white =
-                (pos.side_to_move() == WHITE) ? clamped : static_cast<int16_t>(-clamped);
-
-            DatagenRecord record{pos.fen(), score_white, result};
+            PackedBoard packed{};
+            pack_position(pos, clamped, result, packed);
+            DatagenRecord record{packed};
             write_record(output, record);
 
             if (!apply_uci_move(pos, tok)) {
