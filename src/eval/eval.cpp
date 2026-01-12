@@ -286,6 +286,15 @@ namespace Eval {
                                 eg -= Params.TRAPPED_BISHOP_CORNER_EG * us_sign;
                             }
                         }
+
+                        Bitboard light_sq_mask = 0x55AA55AA55AA55AAULL;
+                        bool bishop_is_light = Bitboards::check_bit(light_sq_mask, sq);
+                        Bitboard my_pawns = pos.pieces(PAWN, us);
+                        Bitboard my_pawns_same_color = my_pawns & (bishop_is_light ? light_sq_mask : ~light_sq_mask);
+                        if (Bitboards::count(my_pawns_same_color) >= 3) {
+                            mg -= Params.BAD_BISHOP_PENALTY_MG * us_sign;
+                            eg -= Params.BAD_BISHOP_PENALTY_EG * us_sign;
+                        }
                     }
                     if (pt == ROOK) {
                         if (us == WHITE) {
