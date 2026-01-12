@@ -741,6 +741,56 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
 // Iterative Deepening
 // ----------------------------------------------------------------------------
 
+// Helper to retrieve PV from TT
+std::string get_pv(Position& pos, uint16_t root_move) {
+    std::string res = "";
+    std::vector<uint16_t> moves;
+    std::vector<uint64_t> hashes;
+
+    uint16_t m = root_move;
+    int limit = 0;
+
+    while (limit < 64 && m != 0) {
+        if (!MoveGen::is_pseudo_legal(pos, m)) break;
+
+        pos.make_move(m);
+        // Verify legality
+        if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
+            pos.unmake_move(m);
+            break;
+        }
+
+        // Cycle check
+        bool cycle = false;
+        for (auto h : hashes) if (h == pos.key()) cycle = true;
+        if (cycle) {
+            pos.unmake_move(m);
+            break;
+        }
+
+        hashes.push_back(pos.key());
+        moves.push_back(m);
+        res += move_to_uci(m) + " ";
+        limit++;
+
+        TTEntry tte;
+        if (TTable.probe(pos.key(), tte)) {
+            m = tte.move;
+        } else {
+            m = 0;
+        }
+    }
+
+    // Unmake
+    while (!moves.empty()) {
+        pos.unmake_move(moves.back());
+        moves.pop_back();
+    }
+
+    if (!res.empty()) res.pop_back();
+    return res;
+}
+
 struct RootMove {
     uint16_t move;
     int score;
@@ -762,7 +812,7 @@ void SearchWorker::iter_deep() {
                  score_str = "mate " + std::to_string(tb_score > 0 ? mate : -mate);
              }
 
-             std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << move_to_uci(tb_move) << "\n";
+             std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << get_pv(pos, tb_move) << "\n";
              std::cout << "bestmove " << move_to_uci(tb_move) << "\n";
              return;
         }
@@ -887,7 +937,7 @@ void SearchWorker::iter_deep() {
 
              std::cout << "info depth " << depth << " score " << score_str
                        << " time " << ms << " nodes " << GlobalPool.get_total_nodes()
-                       << " nps " << nps << " pv " << move_to_uci(best_move) << "\n";
+                       << " nps " << nps << " pv " << get_pv(pos, best_move) << "\n";
         }
     }
 
