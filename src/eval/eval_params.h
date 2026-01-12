@@ -33,6 +33,14 @@ namespace Eval {
         int CANDIDATE_PASSED_PAWN_BONUS_EG;
         int PAWN_MAJORITY_BONUS_MG;
         int PAWN_MAJORITY_BONUS_EG;
+        int PAWN_BACKWARD_MG;
+        int PAWN_BACKWARD_EG;
+        int PAWN_CHAIN_BONUS_MG;
+        int PAWN_CHAIN_BONUS_EG;
+        int PAWN_LEVER_PENALTY_MG;
+        int PAWN_LEVER_PENALTY_EG;
+        int DOUBLED_OPEN_FILE_BONUS_MG;
+        int DOUBLED_OPEN_FILE_BONUS_EG;
 
         int TEMPO_BONUS;
 
@@ -48,17 +56,30 @@ namespace Eval {
         int ROOK_ON_SEVENTH_EG;
         int ROOK_BEHIND_PASSED_MG;
         int ROOK_BEHIND_PASSED_EG;
+        int ROOK_OPEN_FILE_CLEAR_BONUS_MG;
+        int ROOK_OPEN_FILE_CLEAR_BONUS_EG;
         int TRAPPED_ROOK_BEHIND_KING_MG;
         int TRAPPED_ROOK_BEHIND_KING_EG;
         int TRAPPED_ROOK_BLOCKED_PAWNS_MG;
         int TRAPPED_ROOK_BLOCKED_PAWNS_EG;
         int KNIGHT_OUTPOST_BONUS_MG;
         int KNIGHT_OUTPOST_BONUS_EG;
+        int BISHOP_LONG_DIAGONAL_BONUS_MG;
+        int BISHOP_LONG_DIAGONAL_BONUS_EG;
+        int BISHOP_BLOCKED_CENTER_PENALTY_MG;
+        int BISHOP_BLOCKED_CENTER_PENALTY_EG;
 
         int KING_ZONE_ATTACK_WEIGHTS[6];
         int KING_SAFETY_TABLE[100];
         int KING_OPEN_FILE_PENALTY;
         int KING_SEMI_OPEN_FILE_PENALTY;
+        int KING_PAWN_SHIELD_BONUS_MG;
+        int KING_PAWN_SHIELD_BONUS_EG;
+        int KING_PAWN_STORM_PENALTY_MG;
+        int KING_PAWN_STORM_PENALTY_EG;
+        int KING_ATTACKER_BONUS;
+        int KING_QUEEN_ATTACKER_BONUS;
+        int KING_SAFETY_CLAMP;
 
         int RESTRICTED_PENALTY_MG[6];
         int RESTRICTED_PENALTY_EG[6];
@@ -66,10 +87,6 @@ namespace Eval {
         int RESTRICTED_STRICT_PENALTY_EG[6];
         int PRESSURE_BONUS_MG[6];
         int PRESSURE_BONUS_EG[6];
-
-        int MOBILITY_OFFSET[4];
-        int MOBILITY_WEIGHT_MG[4];
-        int MOBILITY_WEIGHT_EG[4];
 
         int INACTIVE_PENALTY_MG;
         int INACTIVE_PENALTY_EG;
@@ -82,6 +99,22 @@ namespace Eval {
         int SCALE_PAWNLESS_DRAW;
         int SCALE_KRP_KR;
         int SCALE_FORTRESS;
+        int SPACE_PAWN_BONUS_MG;
+        int SPACE_PAWN_BONUS_EG;
+        int SPACE_PIECE_BONUS_MG;
+        int SPACE_PIECE_BONUS_EG;
+        int INITIATIVE_BONUS_MG;
+        int INITIATIVE_BONUS_EG;
+        int BISHOP_PAIR_OPEN_SCALE_MG;
+        int BISHOP_PAIR_OPEN_SCALE_EG;
+        int PASSED_PAWN_DISTANCE_BONUS_EG[8];
+        int PASSED_PAWN_DISTANCE_BONUS_MG[8];
+        int PASSED_PAWN_KING_CLOSER_BONUS_MG;
+        int PASSED_PAWN_KING_CLOSER_BONUS_EG;
+        int PASSED_PAWN_BLOCKER_BY_PIECE_MG[6];
+        int PASSED_PAWN_BLOCKER_BY_PIECE_EG[6];
+        int CLAMP_MG;
+        int CLAMP_EG;
 
         // PSTs
         int MG_PAWN_TABLE[64];

@@ -49,17 +49,37 @@ namespace Eval {
         Params.CANDIDATE_PASSED_PAWN_BONUS_EG = 15;
         Params.PAWN_MAJORITY_BONUS_MG = 4;
         Params.PAWN_MAJORITY_BONUS_EG = 12;
+        Params.PAWN_BACKWARD_MG = 8;
+        Params.PAWN_BACKWARD_EG = 12;
+        Params.PAWN_CHAIN_BONUS_MG = 6;
+        Params.PAWN_CHAIN_BONUS_EG = 4;
+        Params.PAWN_LEVER_PENALTY_MG = 6;
+        Params.PAWN_LEVER_PENALTY_EG = 4;
+        Params.DOUBLED_OPEN_FILE_BONUS_MG = 4;
+        Params.DOUBLED_OPEN_FILE_BONUS_EG = 8;
 
         int passed_rank_mg[] = { 0, 10, 10, 20, 40, 60, 100, 0 };
         int passed_rank_eg[] = { 0, 20, 20, 40, 80, 120, 200, 0 };
         std::memcpy(Params.PASSED_PAWN_RANK_BONUS_MG, passed_rank_mg, sizeof(passed_rank_mg));
         std::memcpy(Params.PASSED_PAWN_RANK_BONUS_EG, passed_rank_eg, sizeof(passed_rank_eg));
+        int passer_distance_mg[] = { 0, 2, 4, 6, 8, 10, 12, 0 };
+        int passer_distance_eg[] = { 0, 6, 8, 12, 16, 24, 36, 0 };
+        std::memcpy(Params.PASSED_PAWN_DISTANCE_BONUS_MG, passer_distance_mg, sizeof(passer_distance_mg));
+        std::memcpy(Params.PASSED_PAWN_DISTANCE_BONUS_EG, passer_distance_eg, sizeof(passer_distance_eg));
+        Params.PASSED_PAWN_KING_CLOSER_BONUS_MG = 6;
+        Params.PASSED_PAWN_KING_CLOSER_BONUS_EG = 10;
+        int passer_block_mg[] = { 0, -8, -10, -14, -20, -28 };
+        int passer_block_eg[] = { 0, -10, -12, -18, -24, -32 };
+        std::memcpy(Params.PASSED_PAWN_BLOCKER_BY_PIECE_MG, passer_block_mg, sizeof(passer_block_mg));
+        std::memcpy(Params.PASSED_PAWN_BLOCKER_BY_PIECE_EG, passer_block_eg, sizeof(passer_block_eg));
 
         // Pieces
         Params.ROOK_OPEN_FILE_BONUS_MG = 20;
         Params.ROOK_OPEN_FILE_BONUS_EG = 10;
         Params.ROOK_SEMI_OPEN_FILE_BONUS_MG = 10;
         Params.ROOK_SEMI_OPEN_FILE_BONUS_EG = 5;
+        Params.ROOK_OPEN_FILE_CLEAR_BONUS_MG = 8;
+        Params.ROOK_OPEN_FILE_CLEAR_BONUS_EG = 4;
         Params.ROOK_ON_SEVENTH_MG = 40;
         Params.ROOK_ON_SEVENTH_EG = 20;
         Params.TRAPPED_ROOK_BEHIND_KING_MG = 35;
@@ -68,6 +88,10 @@ namespace Eval {
         Params.TRAPPED_ROOK_BLOCKED_PAWNS_EG = 8;
         Params.KNIGHT_OUTPOST_BONUS_MG = 30;
         Params.KNIGHT_OUTPOST_BONUS_EG = 20;
+        Params.BISHOP_LONG_DIAGONAL_BONUS_MG = 12;
+        Params.BISHOP_LONG_DIAGONAL_BONUS_EG = 8;
+        Params.BISHOP_BLOCKED_CENTER_PENALTY_MG = 10;
+        Params.BISHOP_BLOCKED_CENTER_PENALTY_EG = 6;
 
         Params.BAD_BISHOP_PENALTY_MG = 10;
         Params.BAD_BISHOP_PENALTY_EG = 10;
@@ -79,6 +103,13 @@ namespace Eval {
         // King Safety
         Params.KING_OPEN_FILE_PENALTY = 20;
         Params.KING_SEMI_OPEN_FILE_PENALTY = 10;
+        Params.KING_PAWN_SHIELD_BONUS_MG = 6;
+        Params.KING_PAWN_SHIELD_BONUS_EG = 2;
+        Params.KING_PAWN_STORM_PENALTY_MG = 8;
+        Params.KING_PAWN_STORM_PENALTY_EG = 4;
+        Params.KING_ATTACKER_BONUS = 6;
+        Params.KING_QUEEN_ATTACKER_BONUS = 12;
+        Params.KING_SAFETY_CLAMP = 250;
 
         int zone_weights[] = { 0, 2, 2, 3, 5, 0 };
         std::memcpy(Params.KING_ZONE_ATTACK_WEIGHTS, zone_weights, sizeof(zone_weights));
@@ -189,6 +220,17 @@ namespace Eval {
             Params.PRESSURE_BONUS_MG[i] = 5;
             Params.PRESSURE_BONUS_EG[i] = 5;
         }
+
+        Params.SPACE_PAWN_BONUS_MG = 3;
+        Params.SPACE_PAWN_BONUS_EG = 1;
+        Params.SPACE_PIECE_BONUS_MG = 4;
+        Params.SPACE_PIECE_BONUS_EG = 2;
+        Params.INITIATIVE_BONUS_MG = 6;
+        Params.INITIATIVE_BONUS_EG = 2;
+        Params.BISHOP_PAIR_OPEN_SCALE_MG = 2;
+        Params.BISHOP_PAIR_OPEN_SCALE_EG = 3;
+        Params.CLAMP_MG = 3200;
+        Params.CLAMP_EG = 3200;
     }
 
     bool load_params(const char* filename) {
