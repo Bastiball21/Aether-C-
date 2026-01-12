@@ -131,8 +131,8 @@ namespace Eval {
 
             // Connected Passed Pawns
             Bitboard passed = entry.passed_pawns[c];
-            Bitboard east = (passed << 1) & ~Bitboards::FileA;
-            Bitboard west = (passed >> 1) & ~Bitboards::FileH;
+            Bitboard east = (passed << 1) & ~Bitboards::FileH;
+            Bitboard west = (passed >> 1) & ~Bitboards::FileA;
             Bitboard connected = passed & (east | west);
             int conn_cnt = Bitboards::count(connected);
 
