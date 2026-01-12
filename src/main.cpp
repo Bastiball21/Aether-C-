@@ -11,6 +11,7 @@
 #include "perft.h"
 #include "eval/eval.h"
 #include "eval/eval_tune.h"
+#include "datagen.h"
 #include "syzygy.h"
 
 // Parse move string to uint16_t
@@ -99,6 +100,40 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
         if (arg == "tuneepd" && i + 2 < argc) {
             Eval::tune_epd(argv[i+1], argv[i+2]);
+            return 0;
+        }
+        if (arg == "datagen" && i + 3 < argc) {
+            DatagenConfig cfg;
+            cfg.num_games = std::stoll(argv[i + 1]);
+            cfg.num_threads = std::stoi(argv[i + 2]);
+            cfg.output_path = argv[i + 3];
+            i += 3;
+
+            for (; i + 1 < argc; i++) {
+                std::string opt = argv[i];
+                if (opt == "--seed" && i + 1 < argc) {
+                    cfg.seed = std::stoull(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--book" && i + 1 < argc) {
+                    cfg.opening_book_path = argv[i + 1];
+                    i += 1;
+                } else if (opt == "--random-plies" && i + 1 < argc) {
+                    cfg.opening_random_plies = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--nodes" && i + 1 < argc) {
+                    cfg.search_nodes = std::stoll(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--depth" && i + 1 < argc) {
+                    cfg.search_depth = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--chess960") {
+                    cfg.chess960 = true;
+                } else {
+                    break;
+                }
+            }
+
+            run_datagen(cfg);
             return 0;
         }
         if ((arg == "--weights" || arg == "-w") && i + 1 < argc) {
