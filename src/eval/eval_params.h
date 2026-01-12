@@ -79,6 +79,10 @@ namespace Eval {
         int PAWN_DOUBLED_MG;
         int PAWN_DOUBLED_EG;
 
+        int SCALE_PAWNLESS_DRAW;
+        int SCALE_KRP_KR;
+        int SCALE_FORTRESS;
+
         // PSTs
         int MG_PAWN_TABLE[64];
         int EG_PAWN_TABLE[64];
