@@ -284,8 +284,9 @@ namespace Eval {
 
     int evaluate_hce(const Position& pos, int alpha, int beta) {
         // 1. Setup & Pawn Eval
-        int mg = 0, eg = 0;
-        int phase = 0;
+        int mg = pos.eval_mg();
+        int eg = pos.eval_eg();
+        int phase = pos.eval_phase();
 
         PawnEntry pawn_entry = evaluate_pawns(pos);
         mg += pawn_entry.score_mg;
@@ -320,18 +321,8 @@ namespace Eval {
             // Material & PST Loop
             for (int pt = 0; pt < 6; pt++) {
                 Bitboard bb = pos.pieces((PieceType)pt, us);
-                int count = Bitboards::count(bb);
-
-                // Phase & Material
-                phase += count * Params.PHASE_WEIGHTS[pt];
-                int base_mg = Params.MG_VALS[pt];
-                int base_eg = Params.EG_VALS[pt];
-
-                // PST
                 while (bb) {
                     Square sq = (Square)Bitboards::pop_lsb(bb);
-                    mg += (base_mg + get_pst(pt, sq, us, true)) * us_sign;
-                    eg += (base_eg + get_pst(pt, sq, us, false)) * us_sign;
 
                     // Generate Attacks
                     Bitboard attacks = 0;

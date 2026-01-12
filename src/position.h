@@ -18,6 +18,9 @@ public:
         Square ep_square;
         int rule50;
         Piece captured;
+        int eval_mg;
+        int eval_eg;
+        int eval_phase;
     };
 
     Position();
@@ -39,6 +42,9 @@ public:
     Square en_passant_square() const { return ep_square; }
     int castling_rights_mask() const { return castling; }
     int rule50_count() const { return rule50; }
+    int eval_mg() const { return eval_mg_acc; }
+    int eval_eg() const { return eval_eg_acc; }
+    int eval_phase() const { return eval_phase_acc; }
 
     // Material Helper
     int non_pawn_material(Color c) const;
@@ -84,6 +90,9 @@ private:
 
     Key st_key;
     Key p_key;
+    int eval_mg_acc;
+    int eval_eg_acc;
+    int eval_phase_acc;
 
     std::vector<StateInfo> history;
 };
