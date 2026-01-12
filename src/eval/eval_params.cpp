@@ -41,6 +41,10 @@ namespace Eval {
         Params.PASSED_PAWN_CONNECTED_BONUS_EG = 20;
         Params.PASSED_PAWN_BLOCKER_PENALTY_MG = -10;
         Params.PASSED_PAWN_BLOCKER_PENALTY_EG = -20;
+        Params.CANDIDATE_PASSED_PAWN_BONUS_MG = 5;
+        Params.CANDIDATE_PASSED_PAWN_BONUS_EG = 15;
+        Params.PAWN_MAJORITY_BONUS_MG = 4;
+        Params.PAWN_MAJORITY_BONUS_EG = 12;
 
         int passed_rank_mg[] = { 0, 10, 10, 20, 40, 60, 100, 0 };
         int passed_rank_eg[] = { 0, 20, 20, 40, 80, 120, 200, 0 };
@@ -80,6 +84,13 @@ namespace Eval {
             Params.KING_SAFETY_TABLE[i] = (i * i) / 4;
             if (Params.KING_SAFETY_TABLE[i] > 400) Params.KING_SAFETY_TABLE[i] = 400;
         }
+
+        const int mobility_offset[] = { 0, 1, 2, 4 };
+        const int mobility_weight_mg[] = { 6, 6, 6, 6 };
+        const int mobility_weight_eg[] = { 6, 6, 6, 6 };
+        std::memcpy(Params.MOBILITY_OFFSET, mobility_offset, sizeof(mobility_offset));
+        std::memcpy(Params.MOBILITY_WEIGHT_MG, mobility_weight_mg, sizeof(mobility_weight_mg));
+        std::memcpy(Params.MOBILITY_WEIGHT_EG, mobility_weight_eg, sizeof(mobility_weight_eg));
 
         // PSTs (Simple Center Bonus)
         const int center_bonus[64] = {

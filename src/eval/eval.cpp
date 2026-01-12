@@ -116,16 +116,34 @@ namespace Eval {
 
                 Bitboard span = (file_mask | adj_mask) & forward_mask;
 
-                if ((span & them_pawns) == 0) {
+                bool is_passed = (span & them_pawns) == 0;
+                if (is_passed) {
                     Bitboards::set_bit(entry.passed_pawns[c], s);
                     int rel_r = (c == WHITE) ? r : 7 - r;
                     entry.score_mg += Params.PASSED_PAWN_RANK_BONUS_MG[rel_r] * us_sign;
                     entry.score_eg += Params.PASSED_PAWN_RANK_BONUS_EG[rel_r] * us_sign;
 
+                    if (Bitboards::check_bit(entry.pawn_attacks[c], s) && rel_r >= 3) {
+                        entry.score_mg += Params.PASSED_PAWN_SUPPORTED_BONUS_MG * us_sign;
+                        entry.score_eg += Params.PASSED_PAWN_SUPPORTED_BONUS_EG * us_sign;
+                    }
+
                     // Front squares mask (for blocker penalty later)
                     Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
                     if (front_s >= 0 && front_s < 64) {
                         Bitboards::set_bit(entry.passed_front_mask[c], front_s);
+                    }
+                } else {
+                    Bitboard same_file_forward = file_mask & forward_mask;
+                    Bitboard adj_forward = adj_mask & forward_mask;
+                    Bitboard enemy_same_file = them_pawns & same_file_forward;
+                    if (enemy_same_file == 0) {
+                        Bitboard enemy_adj = them_pawns & adj_forward;
+                        Bitboard capturable = Bitboards::get_pawn_attacks(s, c);
+                        if (enemy_adj != 0 && (enemy_adj & ~capturable) == 0) {
+                            entry.score_mg += Params.CANDIDATE_PASSED_PAWN_BONUS_MG * us_sign;
+                            entry.score_eg += Params.CANDIDATE_PASSED_PAWN_BONUS_EG * us_sign;
+                        }
                     }
                 }
             }
@@ -142,6 +160,29 @@ namespace Eval {
             // If A4 and B4 are passed, both are connected.
             entry.score_mg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_MG * us_sign;
             entry.score_eg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_EG * us_sign;
+        }
+
+        Bitboard white_pawns = pos.pieces(PAWN, WHITE);
+        Bitboard black_pawns = pos.pieces(PAWN, BLACK);
+        Bitboard queenside_mask =
+            (Bitboards::FileA << FILE_A) | (Bitboards::FileA << FILE_B) |
+            (Bitboards::FileA << FILE_C) | (Bitboards::FileA << FILE_D);
+        Bitboard kingside_mask =
+            (Bitboards::FileA << FILE_E) | (Bitboards::FileA << FILE_F) |
+            (Bitboards::FileA << FILE_G) | (Bitboards::FileA << FILE_H);
+
+        int queen_diff = Bitboards::count(white_pawns & queenside_mask)
+            - Bitboards::count(black_pawns & queenside_mask);
+        if (queen_diff != 0) {
+            entry.score_mg += queen_diff * Params.PAWN_MAJORITY_BONUS_MG;
+            entry.score_eg += queen_diff * Params.PAWN_MAJORITY_BONUS_EG;
+        }
+
+        int king_diff = Bitboards::count(white_pawns & kingside_mask)
+            - Bitboards::count(black_pawns & kingside_mask);
+        if (king_diff != 0) {
+            entry.score_mg += king_diff * Params.PAWN_MAJORITY_BONUS_MG;
+            entry.score_eg += king_diff * Params.PAWN_MAJORITY_BONUS_EG;
         }
 
         PawnHash[idx] = entry;
@@ -167,6 +208,7 @@ namespace Eval {
         int king_attackers_count[2]; // Number of pieces attacking king zone
         Square king_sq[2];
         Bitboard mobility_area[2]; // Safe squares for mobility
+        Bitboard restricted_pieces[2];
     };
 
     int evaluate_hce(const Position& pos, int alpha, int beta) {
@@ -182,6 +224,7 @@ namespace Eval {
         info.attacked_by[WHITE] = info.attacked_by[BLACK] = 0;
         info.king_attack_units[WHITE] = info.king_attack_units[BLACK] = 0;
         info.king_attackers_count[WHITE] = info.king_attackers_count[BLACK] = 0;
+        info.restricted_pieces[WHITE] = info.restricted_pieces[BLACK] = 0;
 
         // Init King Info
         for (Color c : {WHITE, BLACK}) {
@@ -237,6 +280,32 @@ namespace Eval {
                              info.king_attack_units[them] += Params.KING_ZONE_ATTACK_WEIGHTS[pt] * Bitboards::count(zone_attacks);
                              info.king_attackers_count[them]++;
                          }
+                    }
+
+                    if (pt != PAWN && pt != KING) {
+                        Bitboard safe_mob = attacks & ~pos.pieces(us);
+                        int mob_cnt = Bitboards::count(safe_mob);
+                        Bitboard pawn_safe_attacks = safe_mob & ~pawn_entry.pawn_attacks[them];
+                        int safe_mob_val = Bitboards::count(pawn_safe_attacks);
+
+                        if (safe_mob_val <= 3) {
+                            if (safe_mob_val <= 1) {
+                                mg -= Params.RESTRICTED_STRICT_PENALTY_MG[pt] * us_sign;
+                                eg -= Params.RESTRICTED_STRICT_PENALTY_EG[pt] * us_sign;
+                            } else {
+                                mg -= Params.RESTRICTED_PENALTY_MG[pt] * us_sign;
+                                eg -= Params.RESTRICTED_PENALTY_EG[pt] * us_sign;
+                            }
+                        }
+
+                        if (safe_mob_val <= 2) {
+                            Bitboards::set_bit(info.restricted_pieces[us], sq);
+                        }
+
+                        if ((pt == KNIGHT || pt == BISHOP) && mob_cnt <= 2) {
+                            mg -= Params.INACTIVE_PENALTY_MG * us_sign;
+                            eg -= Params.INACTIVE_PENALTY_EG * us_sign;
+                        }
                     }
 
                     // Mobility (Safe)
@@ -355,6 +424,15 @@ namespace Eval {
                              mg += Params.ROOK_ON_SEVENTH_MG * us_sign;
                              eg += Params.ROOK_ON_SEVENTH_EG * us_sign;
                         }
+
+                        Bitboard passed_on_file = pawn_entry.passed_pawns[us] & file_mask;
+                        if (passed_on_file) {
+                            Square relevant_pawn = (Square)Bitboards::lsb(passed_on_file);
+                            if ((us == WHITE && sq < relevant_pawn) || (us == BLACK && sq > relevant_pawn)) {
+                                mg += Params.ROOK_BEHIND_PASSED_MG * us_sign;
+                                eg += Params.ROOK_BEHIND_PASSED_EG * us_sign;
+                            }
+                        }
                     }
                     if (pt == KNIGHT) {
                         // Outpost
@@ -382,6 +460,24 @@ namespace Eval {
             int blocked_count = Bitboards::count(blocked_passed);
             mg += blocked_count * Params.PASSED_PAWN_BLOCKER_PENALTY_MG * us_sign;
             eg += blocked_count * Params.PASSED_PAWN_BLOCKER_PENALTY_EG * us_sign;
+        }
+
+        for (Color us : {WHITE, BLACK}) {
+            Color them = ~us;
+            int us_sign = (us == WHITE) ? 1 : -1;
+            Bitboard targets = info.restricted_pieces[them];
+            while (targets) {
+                Square sq = (Square)Bitboards::pop_lsb(targets);
+                if (Bitboards::check_bit(info.attacked_by[us], sq)) {
+                    if (!Bitboards::check_bit(pawn_entry.pawn_attacks[them], sq)) {
+                        PieceType pt = (PieceType)(pos.piece_on(sq) % 6);
+                        if (pt != NO_PIECE_TYPE && pt != KING && pt != PAWN) {
+                            mg += Params.PRESSURE_BONUS_MG[pt] * us_sign;
+                            eg += Params.PRESSURE_BONUS_EG[pt] * us_sign;
+                        }
+                    }
+                }
+            }
         }
 
         // 3. King Safety

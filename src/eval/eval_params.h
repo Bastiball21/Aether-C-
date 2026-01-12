@@ -29,6 +29,10 @@ namespace Eval {
         int PASSED_PAWN_CONNECTED_BONUS_EG;
         int PASSED_PAWN_BLOCKER_PENALTY_MG;
         int PASSED_PAWN_BLOCKER_PENALTY_EG;
+        int CANDIDATE_PASSED_PAWN_BONUS_MG;
+        int CANDIDATE_PASSED_PAWN_BONUS_EG;
+        int PAWN_MAJORITY_BONUS_MG;
+        int PAWN_MAJORITY_BONUS_EG;
 
         int TEMPO_BONUS;
 
@@ -62,6 +66,10 @@ namespace Eval {
         int RESTRICTED_STRICT_PENALTY_EG[6];
         int PRESSURE_BONUS_MG[6];
         int PRESSURE_BONUS_EG[6];
+
+        int MOBILITY_OFFSET[4];
+        int MOBILITY_WEIGHT_MG[4];
+        int MOBILITY_WEIGHT_EG[4];
 
         int INACTIVE_PENALTY_MG;
         int INACTIVE_PENALTY_EG;
