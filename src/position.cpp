@@ -1,4 +1,5 @@
 #include "position.h"
+#include "eval/eval_params.h"
 #include <sstream>
 #include <cstring>
 #include <cassert>
@@ -32,6 +33,37 @@ namespace Zobrist {
 
         for (int i = 0; i < 65; i++)
             enpassant[i] = rand64();
+    }
+}
+
+namespace {
+    int pst_value(PieceType pt, Square sq, Color side, bool is_mg) {
+        int index = (side == WHITE) ? (sq ^ 56) : sq;
+        switch (pt) {
+            case PAWN: return is_mg ? Eval::Params.MG_PAWN_TABLE[index] : Eval::Params.EG_PAWN_TABLE[index];
+            case KNIGHT: return is_mg ? Eval::Params.MG_KNIGHT_TABLE[index] : Eval::Params.EG_KNIGHT_TABLE[index];
+            case BISHOP: return is_mg ? Eval::Params.MG_BISHOP_TABLE[index] : Eval::Params.EG_BISHOP_TABLE[index];
+            case ROOK: return is_mg ? Eval::Params.MG_ROOK_TABLE[index] : Eval::Params.EG_ROOK_TABLE[index];
+            case QUEEN: return is_mg ? Eval::Params.MG_QUEEN_TABLE[index] : Eval::Params.EG_QUEEN_TABLE[index];
+            case KING: return is_mg ? Eval::Params.MG_KING_TABLE[index] : Eval::Params.EG_KING_TABLE[index];
+            default: return 0;
+        }
+    }
+
+    int piece_mg_value(Piece p, Square sq) {
+        if (p == NO_PIECE) return 0;
+        Color side = (Color)(p / 6);
+        PieceType pt = (PieceType)(p % 6);
+        int sign = (side == WHITE) ? 1 : -1;
+        return sign * (Eval::Params.MG_VALS[pt] + pst_value(pt, sq, side, true));
+    }
+
+    int piece_eg_value(Piece p, Square sq) {
+        if (p == NO_PIECE) return 0;
+        Color side = (Color)(p / 6);
+        PieceType pt = (PieceType)(p % 6);
+        int sign = (side == WHITE) ? 1 : -1;
+        return sign * (Eval::Params.EG_VALS[pt] + pst_value(pt, sq, side, false));
     }
 }
 
@@ -97,6 +129,9 @@ void Position::set(const std::string& fen) {
     halfmove_clock = 0;
     st_key = 0;
     p_key = 0;
+    eval_mg_acc = 0;
+    eval_eg_acc = 0;
+    eval_phase_acc = 0;
     history.clear();
 
     std::stringstream ss(fen);
@@ -172,6 +207,21 @@ void Position::set(const std::string& fen) {
     ss >> fullmove;
     halfmove_clock = (fullmove - 1) * 2 + (side == BLACK);
 
+    // Initialize incremental eval accumulators
+    for (int pt = 0; pt < 6; pt++) {
+        for (Color c : {WHITE, BLACK}) {
+            Bitboard bb = pieces((PieceType)pt, c);
+            int count = Bitboards::count(bb);
+            eval_phase_acc += count * Eval::Params.PHASE_WEIGHTS[pt];
+            while (bb) {
+                Square sq = (Square)Bitboards::pop_lsb(bb);
+                Piece piece = (Piece)(pt + (c == WHITE ? 0 : 6));
+                eval_mg_acc += piece_mg_value(piece, sq);
+                eval_eg_acc += piece_eg_value(piece, sq);
+            }
+        }
+    }
+
     // Initial StateInfo
     StateInfo si;
     si.key = st_key;
@@ -180,6 +230,9 @@ void Position::set(const std::string& fen) {
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE;
+    si.eval_mg = eval_mg_acc;
+    si.eval_eg = eval_eg_acc;
+    si.eval_phase = eval_phase_acc;
 
     history.push_back(si);
 }
@@ -208,6 +261,9 @@ void Position::make_move(uint16_t move) {
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE; // Will fill if capture
+    si.eval_mg = eval_mg_acc;
+    si.eval_eg = eval_eg_acc;
+    si.eval_phase = eval_phase_acc;
 
     // Update rule50
     rule50++;
@@ -227,17 +283,34 @@ void Position::make_move(uint16_t move) {
         }
         captured_piece = board[capture_sq];
         si.captured = captured_piece;
+        eval_mg_acc -= piece_mg_value(captured_piece, capture_sq);
+        eval_eg_acc -= piece_eg_value(captured_piece, capture_sq);
+        eval_phase_acc -= Eval::Params.PHASE_WEIGHTS[captured_piece % 6];
         remove_piece(capture_sq);
+    }
+
+    Piece promo_piece = NO_PIECE;
+    if (flag & 8) {
+        PieceType promo_pt = (PieceType)((flag & 3) + 1); // N=1, B=2, R=3, Q=4
+        promo_piece = (Piece)(promo_pt + (side == WHITE ? 0 : 6));
+        eval_mg_acc -= piece_mg_value(p, from);
+        eval_eg_acc -= piece_eg_value(p, from);
+        eval_phase_acc -= Eval::Params.PHASE_WEIGHTS[pt];
+        eval_mg_acc += piece_mg_value(promo_piece, to);
+        eval_eg_acc += piece_eg_value(promo_piece, to);
+        eval_phase_acc += Eval::Params.PHASE_WEIGHTS[promo_pt];
+    } else {
+        eval_mg_acc -= piece_mg_value(p, from);
+        eval_eg_acc -= piece_eg_value(p, from);
+        eval_mg_acc += piece_mg_value(p, to);
+        eval_eg_acc += piece_eg_value(p, to);
     }
 
     // Move Piece
     move_piece(from, to);
 
     // Promotion
-    Piece promo_piece = NO_PIECE;
     if (flag & 8) {
-        PieceType promo_pt = (PieceType)((flag & 3) + 1); // N=1, B=2, R=3, Q=4
-        promo_piece = (Piece)(promo_pt + (side == WHITE ? 0 : 6));
         remove_piece(to);
         put_piece(promo_piece, to);
     }
@@ -247,10 +320,20 @@ void Position::make_move(uint16_t move) {
     if (flag == 2) { // King Side
         rook_from = (side == WHITE) ? SQ_H1 : SQ_H8;
         rook_to = (side == WHITE) ? SQ_F1 : SQ_F8;
+        Piece rook = (side == WHITE) ? W_ROOK : B_ROOK;
+        eval_mg_acc -= piece_mg_value(rook, rook_from);
+        eval_eg_acc -= piece_eg_value(rook, rook_from);
+        eval_mg_acc += piece_mg_value(rook, rook_to);
+        eval_eg_acc += piece_eg_value(rook, rook_to);
         move_piece(rook_from, rook_to);
     } else if (flag == 3) { // Queen Side
         rook_from = (side == WHITE) ? SQ_A1 : SQ_A8;
         rook_to = (side == WHITE) ? SQ_D1 : SQ_D8;
+        Piece rook = (side == WHITE) ? W_ROOK : B_ROOK;
+        eval_mg_acc -= piece_mg_value(rook, rook_from);
+        eval_eg_acc -= piece_eg_value(rook, rook_from);
+        eval_mg_acc += piece_mg_value(rook, rook_to);
+        eval_eg_acc += piece_eg_value(rook, rook_to);
         move_piece(rook_from, rook_to);
     }
 
@@ -297,6 +380,9 @@ void Position::make_null_move() {
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE;
+    si.eval_mg = eval_mg_acc;
+    si.eval_eg = eval_eg_acc;
+    si.eval_phase = eval_phase_acc;
 
     rule50++;
 
@@ -323,6 +409,9 @@ void Position::unmake_null_move() {
     rule50 = si.rule50;
     st_key = si.key;
     p_key = si.pawn_key;
+    eval_mg_acc = si.eval_mg;
+    eval_eg_acc = si.eval_eg;
+    eval_phase_acc = si.eval_phase;
 }
 
 void Position::unmake_move(uint16_t move) {
@@ -375,6 +464,9 @@ void Position::unmake_move(uint16_t move) {
     rule50 = si.rule50;
     st_key = si.key;
     p_key = si.pawn_key;
+    eval_mg_acc = si.eval_mg;
+    eval_eg_acc = si.eval_eg;
+    eval_phase_acc = si.eval_phase;
 }
 
 bool Position::is_attacked(Square sq, Color by_side) const {
