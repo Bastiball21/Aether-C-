@@ -1,0 +1,8 @@
+[package]
+name = "aether-c"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# bullet_lib ships NNUE/HalfKP training utilities; enable CUDA for GPU training.
+bullet_lib = { git = "https://github.com/jw1912/bullet", package = "bullet_lib", features = ["cuda"] }
