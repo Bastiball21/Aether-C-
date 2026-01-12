@@ -69,6 +69,13 @@ namespace Eval {
             if (Params.KING_SAFETY_TABLE[i] > 400) Params.KING_SAFETY_TABLE[i] = 400;
         }
 
+        const int mobility_offset[] = { 0, 1, 2, 4 };
+        const int mobility_weight_mg[] = { 6, 6, 6, 6 };
+        const int mobility_weight_eg[] = { 6, 6, 6, 6 };
+        std::memcpy(Params.MOBILITY_OFFSET, mobility_offset, sizeof(mobility_offset));
+        std::memcpy(Params.MOBILITY_WEIGHT_MG, mobility_weight_mg, sizeof(mobility_weight_mg));
+        std::memcpy(Params.MOBILITY_WEIGHT_EG, mobility_weight_eg, sizeof(mobility_weight_eg));
+
         // PSTs (Simple Center Bonus)
         const int center_bonus[64] = {
              0,  0,  0,  0,  0,  0,  0,  0,
