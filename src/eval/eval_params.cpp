@@ -24,6 +24,12 @@ namespace Eval {
         Params.BISHOP_PAIR_BONUS_MG = 30;
         Params.BISHOP_PAIR_BONUS_EG = 50;
         Params.TEMPO_BONUS = 20;
+        int mobility_offsets[] = {0, 1, 2, 4};
+        int mobility_weights_mg[] = {6, 6, 6, 6};
+        int mobility_weights_eg[] = {6, 6, 6, 6};
+        std::memcpy(Params.MOBILITY_OFFSET, mobility_offsets, sizeof(mobility_offsets));
+        std::memcpy(Params.MOBILITY_WEIGHT_MG, mobility_weights_mg, sizeof(mobility_weights_mg));
+        std::memcpy(Params.MOBILITY_WEIGHT_EG, mobility_weights_eg, sizeof(mobility_weights_eg));
 
         // Pawns
         Params.PAWN_ISOLATED_MG = 10;
@@ -52,11 +58,17 @@ namespace Eval {
         Params.ROOK_SEMI_OPEN_FILE_BONUS_EG = 5;
         Params.ROOK_ON_SEVENTH_MG = 40;
         Params.ROOK_ON_SEVENTH_EG = 20;
+        Params.TRAPPED_ROOK_BEHIND_KING_MG = 35;
+        Params.TRAPPED_ROOK_BEHIND_KING_EG = 10;
+        Params.TRAPPED_ROOK_BLOCKED_PAWNS_MG = 25;
+        Params.TRAPPED_ROOK_BLOCKED_PAWNS_EG = 8;
         Params.KNIGHT_OUTPOST_BONUS_MG = 30;
         Params.KNIGHT_OUTPOST_BONUS_EG = 20;
 
         Params.BAD_BISHOP_PENALTY_MG = 10;
         Params.BAD_BISHOP_PENALTY_EG = 10;
+        Params.TRAPPED_BISHOP_CORNER_MG = 40;
+        Params.TRAPPED_BISHOP_CORNER_EG = 10;
         Params.INACTIVE_PENALTY_MG = 20;
         Params.INACTIVE_PENALTY_EG = 20;
 

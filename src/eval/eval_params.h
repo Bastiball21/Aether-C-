@@ -36,12 +36,22 @@ namespace Eval {
 
         int TEMPO_BONUS;
 
+        int MOBILITY_OFFSET[4];
+        int MOBILITY_WEIGHT_MG[4];
+        int MOBILITY_WEIGHT_EG[4];
+
         int BAD_BISHOP_PENALTY_MG;
         int BAD_BISHOP_PENALTY_EG;
+        int TRAPPED_BISHOP_CORNER_MG;
+        int TRAPPED_BISHOP_CORNER_EG;
         int ROOK_ON_SEVENTH_MG;
         int ROOK_ON_SEVENTH_EG;
         int ROOK_BEHIND_PASSED_MG;
         int ROOK_BEHIND_PASSED_EG;
+        int TRAPPED_ROOK_BEHIND_KING_MG;
+        int TRAPPED_ROOK_BEHIND_KING_EG;
+        int TRAPPED_ROOK_BLOCKED_PAWNS_MG;
+        int TRAPPED_ROOK_BLOCKED_PAWNS_EG;
         int KNIGHT_OUTPOST_BONUS_MG;
         int KNIGHT_OUTPOST_BONUS_EG;
 

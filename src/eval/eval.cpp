@@ -337,6 +337,20 @@ namespace Eval {
                     if (pt == BISHOP) {
                         // Bad Bishop: blocked by own pawns
                         // Check if center pawns are on same color?
+                        if (us == WHITE) {
+                            if ((sq == SQ_A2 && Bitboards::check_bit(pos.pieces(PAWN, us), SQ_B3)) ||
+                                (sq == SQ_H2 && Bitboards::check_bit(pos.pieces(PAWN, us), SQ_G3))) {
+                                mg -= Params.TRAPPED_BISHOP_CORNER_MG * us_sign;
+                                eg -= Params.TRAPPED_BISHOP_CORNER_EG * us_sign;
+                            }
+                        } else {
+                            if ((sq == SQ_A7 && Bitboards::check_bit(pos.pieces(PAWN, us), SQ_B6)) ||
+                                (sq == SQ_H7 && Bitboards::check_bit(pos.pieces(PAWN, us), SQ_G6))) {
+                                mg -= Params.TRAPPED_BISHOP_CORNER_MG * us_sign;
+                                eg -= Params.TRAPPED_BISHOP_CORNER_EG * us_sign;
+                            }
+                        }
+
                         Bitboard light_sq_mask = 0x55AA55AA55AA55AAULL;
                         bool bishop_is_light = Bitboards::check_bit(light_sq_mask, sq);
                         Bitboard my_pawns = pos.pieces(PAWN, us);
@@ -347,6 +361,43 @@ namespace Eval {
                         }
                     }
                     if (pt == ROOK) {
+                        if (us == WHITE) {
+                            bool rook_behind_king = (sq == SQ_A1 && info.king_sq[us] == SQ_B1 &&
+                                                     Bitboards::check_bit(pos.pieces(PAWN, us), SQ_A2)) ||
+                                                    (sq == SQ_H1 && info.king_sq[us] == SQ_G1 &&
+                                                     Bitboards::check_bit(pos.pieces(PAWN, us), SQ_H2));
+                            bool rook_blocked_pawns = (sq == SQ_A1 &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_A2) &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_B2)) ||
+                                                      (sq == SQ_H1 &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_H2) &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_G2));
+                            if (rook_behind_king) {
+                                mg -= Params.TRAPPED_ROOK_BEHIND_KING_MG * us_sign;
+                                eg -= Params.TRAPPED_ROOK_BEHIND_KING_EG * us_sign;
+                            } else if (rook_blocked_pawns) {
+                                mg -= Params.TRAPPED_ROOK_BLOCKED_PAWNS_MG * us_sign;
+                                eg -= Params.TRAPPED_ROOK_BLOCKED_PAWNS_EG * us_sign;
+                            }
+                        } else {
+                            bool rook_behind_king = (sq == SQ_A8 && info.king_sq[us] == SQ_B8 &&
+                                                     Bitboards::check_bit(pos.pieces(PAWN, us), SQ_A7)) ||
+                                                    (sq == SQ_H8 && info.king_sq[us] == SQ_G8 &&
+                                                     Bitboards::check_bit(pos.pieces(PAWN, us), SQ_H7));
+                            bool rook_blocked_pawns = (sq == SQ_A8 &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_A7) &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_B7)) ||
+                                                      (sq == SQ_H8 &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_H7) &&
+                                                       Bitboards::check_bit(pos.pieces(PAWN, us), SQ_G7));
+                            if (rook_behind_king) {
+                                mg -= Params.TRAPPED_ROOK_BEHIND_KING_MG * us_sign;
+                                eg -= Params.TRAPPED_ROOK_BEHIND_KING_EG * us_sign;
+                            } else if (rook_blocked_pawns) {
+                                mg -= Params.TRAPPED_ROOK_BLOCKED_PAWNS_MG * us_sign;
+                                eg -= Params.TRAPPED_ROOK_BLOCKED_PAWNS_EG * us_sign;
+                            }
+                        }
                         // Open File
                         File f = file_of(sq);
                         Bitboard file_mask = Bitboards::FileA << f;
