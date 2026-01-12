@@ -937,7 +937,7 @@ void SearchWorker::iter_deep() {
 
              std::cout << "info depth " << depth << " score " << score_str
                        << " time " << ms << " nodes " << GlobalPool.get_total_nodes()
-                       << " nps " << nps << " pv " << get_pv(pos, best_move) << "\n";
+                       << " nps " << nps << " pv " << get_pv(pos, best_move) << std::endl;
         }
     }
 
