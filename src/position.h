@@ -42,6 +42,7 @@ public:
     Square en_passant_square() const { return ep_square; }
     int castling_rights_mask() const { return castling; }
     int rule50_count() const { return rule50; }
+    int fullmove_number() const { return halfmove_clock / 2 + 1; }
     int eval_mg() const { return eval_mg_acc; }
     int eval_eg() const { return eval_eg_acc; }
     int eval_phase() const { return eval_phase_acc; }
