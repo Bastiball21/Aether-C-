@@ -942,7 +942,7 @@ void SearchWorker::iter_deep() {
     }
 
     if (thread_id == 0) {
-        std::cout << "bestmove " << move_to_uci(best_move) << "\n";
+        std::cout << "bestmove " << move_to_uci(best_move) << std::endl;
     }
 }
 
