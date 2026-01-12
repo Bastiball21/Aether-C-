@@ -118,8 +118,9 @@ namespace Eval {
 
                 if ((span & them_pawns) == 0) {
                     Bitboards::set_bit(entry.passed_pawns[c], s);
-                    entry.score_mg += Params.PASSED_PAWN_RANK_BONUS_MG[r] * us_sign;
-                    entry.score_eg += Params.PASSED_PAWN_RANK_BONUS_EG[r] * us_sign;
+                    int rel_r = (c == WHITE) ? r : 7 - r;
+                    entry.score_mg += Params.PASSED_PAWN_RANK_BONUS_MG[rel_r] * us_sign;
+                    entry.score_eg += Params.PASSED_PAWN_RANK_BONUS_EG[rel_r] * us_sign;
 
                     // Front squares mask (for blocker penalty later)
                     Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
