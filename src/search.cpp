@@ -812,8 +812,8 @@ void SearchWorker::iter_deep() {
                  score_str = "mate " + std::to_string(tb_score > 0 ? mate : -mate);
              }
 
-             std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << get_pv(pos, tb_move) << "\n";
-             std::cout << "bestmove " << move_to_uci(tb_move) << "\n";
+             std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << get_pv(pos, tb_move) << std::endl;
+             std::cout << "bestmove " << move_to_uci(tb_move) << std::endl;
              return;
         }
     }
