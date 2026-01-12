@@ -32,6 +32,10 @@ namespace Eval {
 
         int TEMPO_BONUS;
 
+        int MOBILITY_OFFSET[4];
+        int MOBILITY_WEIGHT_MG[4];
+        int MOBILITY_WEIGHT_EG[4];
+
         int BAD_BISHOP_PENALTY_MG;
         int BAD_BISHOP_PENALTY_EG;
         int TRAPPED_BISHOP_CORNER_MG;

@@ -255,17 +255,12 @@ namespace Eval {
                         else if (pt == QUEEN) mob_idx = 3;
 
                         if (mob_idx != -1) {
-                            // Formula: (count - offset) * weight
-                            // Using Params
-                            // Currently in code: "MOBILITY_BONUS" array in cpp.
-                            // We should use params from EvalParams if available, or static map.
-                            // The previous code had static pair array.
-                            static const std::pair<int, int> MOB_CFG[4] = {{0, 6}, {1, 6}, {2, 6}, {4, 6}};
-                            int offset = MOB_CFG[mob_idx].first;
-                            int weight = MOB_CFG[mob_idx].second;
-                            int val = (mob_cnt - offset) * weight;
-                            mg += val * us_sign;
-                            eg += val * us_sign;
+                            int offset = Params.MOBILITY_OFFSET[mob_idx];
+                            int weight_mg = Params.MOBILITY_WEIGHT_MG[mob_idx];
+                            int weight_eg = Params.MOBILITY_WEIGHT_EG[mob_idx];
+                            int delta = mob_cnt - offset;
+                            mg += delta * weight_mg * us_sign;
+                            eg += delta * weight_eg * us_sign;
                         }
                     }
 

@@ -24,6 +24,12 @@ namespace Eval {
         Params.BISHOP_PAIR_BONUS_MG = 30;
         Params.BISHOP_PAIR_BONUS_EG = 50;
         Params.TEMPO_BONUS = 20;
+        int mobility_offsets[] = {0, 1, 2, 4};
+        int mobility_weights_mg[] = {6, 6, 6, 6};
+        int mobility_weights_eg[] = {6, 6, 6, 6};
+        std::memcpy(Params.MOBILITY_OFFSET, mobility_offsets, sizeof(mobility_offsets));
+        std::memcpy(Params.MOBILITY_WEIGHT_MG, mobility_weights_mg, sizeof(mobility_weights_mg));
+        std::memcpy(Params.MOBILITY_WEIGHT_EG, mobility_weights_eg, sizeof(mobility_weights_eg));
 
         // Pawns
         Params.PAWN_ISOLATED_MG = 10;
