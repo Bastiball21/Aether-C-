@@ -31,6 +31,10 @@ namespace Eval {
         Params.PAWN_DOUBLED_MG = 10;
         Params.PAWN_DOUBLED_EG = 20;
 
+        Params.SCALE_PAWNLESS_DRAW = 96;
+        Params.SCALE_KRP_KR = 72;
+        Params.SCALE_FORTRESS = 80;
+
         Params.PASSED_PAWN_CONNECTED_BONUS_MG = 10;
         Params.PASSED_PAWN_CONNECTED_BONUS_EG = 20;
         Params.PASSED_PAWN_BLOCKER_PENALTY_MG = -10;

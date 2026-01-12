@@ -152,8 +152,79 @@ namespace Eval {
     // Scaling
     // ----------------------------------------------------------------------------
 
-    int get_scale_factor(const Position&, int) {
-        return 128; // Default scale
+    int get_scale_factor(const Position& pos, int phase_clamped) {
+        int scale = 128;
+
+        if (phase_clamped > 12) {
+            return scale;
+        }
+
+        int white_pawns = Bitboards::count(pos.pieces(PAWN, WHITE));
+        int black_pawns = Bitboards::count(pos.pieces(PAWN, BLACK));
+        int white_rooks = Bitboards::count(pos.pieces(ROOK, WHITE));
+        int black_rooks = Bitboards::count(pos.pieces(ROOK, BLACK));
+        int white_queens = Bitboards::count(pos.pieces(QUEEN, WHITE));
+        int black_queens = Bitboards::count(pos.pieces(QUEEN, BLACK));
+        int white_minors = Bitboards::count(pos.pieces(KNIGHT, WHITE)) + Bitboards::count(pos.pieces(BISHOP, WHITE));
+        int black_minors = Bitboards::count(pos.pieces(KNIGHT, BLACK)) + Bitboards::count(pos.pieces(BISHOP, BLACK));
+
+        // Pawnless drawish material
+        if (white_pawns == 0 && black_pawns == 0 && white_queens == 0 && black_queens == 0) {
+            if ((white_rooks + white_minors) <= 1 && (black_rooks + black_minors) <= 1) {
+                scale = std::min(scale, Params.SCALE_PAWNLESS_DRAW);
+            }
+        }
+
+        // KRP vs KR (or mirrored) is often drawish with correct defense.
+        if (white_queens == 0 && black_queens == 0 && white_minors == 0 && black_minors == 0) {
+            bool white_krp = white_rooks == 1 && black_rooks == 1 && white_pawns == 1 && black_pawns == 0;
+            bool black_krp = white_rooks == 1 && black_rooks == 1 && white_pawns == 0 && black_pawns == 1;
+            if (white_krp || black_krp) {
+                scale = std::min(scale, Params.SCALE_KRP_KR);
+            }
+        }
+
+        // Simple fortress heuristic: locked pawn chains, no open files, no major pieces.
+        if (white_queens == 0 && black_queens == 0 && white_rooks == 0 && black_rooks == 0) {
+            Bitboard white_pawn_bb = pos.pieces(PAWN, WHITE);
+            Bitboard black_pawn_bb = pos.pieces(PAWN, BLACK);
+            if (white_pawn_bb && black_pawn_bb) {
+                Bitboard white_attacks = 0;
+                Bitboard black_attacks = 0;
+                Bitboard wp = white_pawn_bb;
+                Bitboard bp = black_pawn_bb;
+                while (wp) {
+                    Square sq = (Square)Bitboards::pop_lsb(wp);
+                    white_attacks |= Bitboards::get_pawn_attacks(sq, WHITE);
+                }
+                while (bp) {
+                    Square sq = (Square)Bitboards::pop_lsb(bp);
+                    black_attacks |= Bitboards::get_pawn_attacks(sq, BLACK);
+                }
+
+                Bitboard white_front = white_pawn_bb << 8;
+                Bitboard black_front = black_pawn_bb >> 8;
+                bool white_blocked = (white_front & ~black_pawn_bb) == 0;
+                bool black_blocked = (black_front & ~white_pawn_bb) == 0;
+                bool no_captures = (white_attacks & black_pawn_bb) == 0 && (black_attacks & white_pawn_bb) == 0;
+                if (white_blocked && black_blocked && no_captures) {
+                    bool has_open_file = false;
+                    Bitboard all_pawns = white_pawn_bb | black_pawn_bb;
+                    for (int f = 0; f < 8; f++) {
+                        Bitboard file_mask = Bitboards::FileA << f;
+                        if ((all_pawns & file_mask) == 0) {
+                            has_open_file = true;
+                            break;
+                        }
+                    }
+                    if (!has_open_file) {
+                        scale = std::min(scale, Params.SCALE_FORTRESS);
+                    }
+                }
+            }
+        }
+
+        return scale;
     }
 
     // ----------------------------------------------------------------------------
@@ -385,6 +456,11 @@ namespace Eval {
                      score = score / 2; // Reduce score advantage in OCB
                  }
             }
+        }
+
+        int scale = get_scale_factor(pos, phase_clamped);
+        if (scale != 128) {
+            score = (score * scale) / 128;
         }
 
         // 5. Perspective & Tempo
