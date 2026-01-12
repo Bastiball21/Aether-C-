@@ -256,7 +256,7 @@ void Position::make_move(uint16_t move) {
 
     // Update Castling Rights
     st_key ^= Zobrist::castle[castling];
-    if (board[from] == W_KING || board[from] == B_KING) {
+    if (pt == KING) {
         if (side == WHITE) castling &= ~3;
         else castling &= ~12;
     }
