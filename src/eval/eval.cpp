@@ -71,6 +71,8 @@ namespace Eval {
             Bitboard pawns = pos.pieces(PAWN, c);
             Bitboard original_pawns = pawns;
             Bitboard them_pawns = pos.pieces(PAWN, ~c);
+            int passed_mg = 0;
+            int passed_eg = 0;
 
             // Calculate attacks first for use in passed pawn logic?
             // Actually, we can do it in the loop or pre-calc.
@@ -119,8 +121,8 @@ namespace Eval {
                 if ((span & them_pawns) == 0) {
                     Bitboards::set_bit(entry.passed_pawns[c], s);
                     int rel_r = (c == WHITE) ? r : 7 - r;
-                    entry.score_mg += Params.PASSED_PAWN_RANK_BONUS_MG[rel_r] * us_sign;
-                    entry.score_eg += Params.PASSED_PAWN_RANK_BONUS_EG[rel_r] * us_sign;
+                    passed_mg += Params.PASSED_PAWN_RANK_BONUS_MG[rel_r];
+                    passed_eg += Params.PASSED_PAWN_RANK_BONUS_EG[rel_r];
 
                     // Front squares mask (for blocker penalty later)
                     Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
@@ -140,8 +142,13 @@ namespace Eval {
             // Bonus is per pawn that is connected?
             // "conn_cnt" counts pawns that have a neighbor.
             // If A4 and B4 are passed, both are connected.
-            entry.score_mg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_MG * us_sign;
-            entry.score_eg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_EG * us_sign;
+            passed_mg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_MG;
+            passed_eg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_EG;
+
+            passed_mg = std::clamp(passed_mg, 0, 220);
+            passed_eg = std::clamp(passed_eg, 0, 260);
+            entry.score_mg += passed_mg * us_sign;
+            entry.score_eg += passed_eg * us_sign;
         }
 
         PawnHash[idx] = entry;
@@ -196,6 +203,8 @@ namespace Eval {
         for (Color us : {WHITE, BLACK}) {
             Color them = ~us;
             int us_sign = (us == WHITE) ? 1 : -1;
+            int mobility_mg = 0;
+            int mobility_eg = 0;
 
             // Mobility Area: Exclude friendly pawns, king, and maybe blocked pieces?
             // Simple definition: ~pieces(us) union (pawn_attacks(them)) ?
@@ -264,8 +273,8 @@ namespace Eval {
                             int offset = MOB_CFG[mob_idx].first;
                             int weight = MOB_CFG[mob_idx].second;
                             int val = (mob_cnt - offset) * weight;
-                            mg += val * us_sign;
-                            eg += val * us_sign;
+                            mobility_mg += val;
+                            mobility_eg += val;
                         }
                     }
 
@@ -323,6 +332,11 @@ namespace Eval {
                 eg += Params.BISHOP_PAIR_BONUS_EG * us_sign;
             }
 
+            mobility_mg = std::clamp(mobility_mg, -120, 120);
+            mobility_eg = std::clamp(mobility_eg, -100, 100);
+            mg += mobility_mg * us_sign;
+            eg += mobility_eg * us_sign;
+
             // Passed Pawn Blockers
             Bitboard blocked_passed = pawn_entry.passed_front_mask[us] & occ;
             int blocked_count = Bitboards::count(blocked_passed);
@@ -358,9 +372,11 @@ namespace Eval {
                 }
             }
 
-            mg -= penalty * us_sign;
+            int mg_penalty = std::clamp(penalty, 0, 180);
+            int eg_penalty = std::clamp(penalty / 8, 0, 30);
+            mg -= mg_penalty * us_sign;
             // EG safety is usually much less relevant or negative (king needs to activate)
-            eg -= (penalty / 8) * us_sign;
+            eg -= eg_penalty * us_sign;
         }
 
         // 4. Interpolate and Scale
