@@ -116,7 +116,8 @@ namespace Eval {
 
                 Bitboard span = (file_mask | adj_mask) & forward_mask;
 
-                if ((span & them_pawns) == 0) {
+                bool is_passed = (span & them_pawns) == 0;
+                if (is_passed) {
                     Bitboards::set_bit(entry.passed_pawns[c], s);
                     int rel_r = (c == WHITE) ? r : 7 - r;
                     entry.score_mg += Params.PASSED_PAWN_RANK_BONUS_MG[rel_r] * us_sign;
@@ -126,6 +127,18 @@ namespace Eval {
                     Square front_s = (c == WHITE) ? (Square)(s + 8) : (Square)(s - 8);
                     if (front_s >= 0 && front_s < 64) {
                         Bitboards::set_bit(entry.passed_front_mask[c], front_s);
+                    }
+                } else {
+                    Bitboard same_file_forward = file_mask & forward_mask;
+                    Bitboard adj_forward = adj_mask & forward_mask;
+                    Bitboard enemy_same_file = them_pawns & same_file_forward;
+                    if (enemy_same_file == 0) {
+                        Bitboard enemy_adj = them_pawns & adj_forward;
+                        Bitboard capturable = Bitboards::get_pawn_attacks(s, c);
+                        if (enemy_adj != 0 && (enemy_adj & ~capturable) == 0) {
+                            entry.score_mg += Params.CANDIDATE_PASSED_PAWN_BONUS_MG * us_sign;
+                            entry.score_eg += Params.CANDIDATE_PASSED_PAWN_BONUS_EG * us_sign;
+                        }
                     }
                 }
             }
@@ -142,6 +155,29 @@ namespace Eval {
             // If A4 and B4 are passed, both are connected.
             entry.score_mg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_MG * us_sign;
             entry.score_eg += conn_cnt * Params.PASSED_PAWN_CONNECTED_BONUS_EG * us_sign;
+        }
+
+        Bitboard white_pawns = pos.pieces(PAWN, WHITE);
+        Bitboard black_pawns = pos.pieces(PAWN, BLACK);
+        Bitboard queenside_mask =
+            (Bitboards::FileA << FILE_A) | (Bitboards::FileA << FILE_B) |
+            (Bitboards::FileA << FILE_C) | (Bitboards::FileA << FILE_D);
+        Bitboard kingside_mask =
+            (Bitboards::FileA << FILE_E) | (Bitboards::FileA << FILE_F) |
+            (Bitboards::FileA << FILE_G) | (Bitboards::FileA << FILE_H);
+
+        int queen_diff = Bitboards::count(white_pawns & queenside_mask)
+            - Bitboards::count(black_pawns & queenside_mask);
+        if (queen_diff != 0) {
+            entry.score_mg += queen_diff * Params.PAWN_MAJORITY_BONUS_MG;
+            entry.score_eg += queen_diff * Params.PAWN_MAJORITY_BONUS_EG;
+        }
+
+        int king_diff = Bitboards::count(white_pawns & kingside_mask)
+            - Bitboards::count(black_pawns & kingside_mask);
+        if (king_diff != 0) {
+            entry.score_mg += king_diff * Params.PAWN_MAJORITY_BONUS_MG;
+            entry.score_eg += king_diff * Params.PAWN_MAJORITY_BONUS_EG;
         }
 
         PawnHash[idx] = entry;

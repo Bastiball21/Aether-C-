@@ -35,6 +35,10 @@ namespace Eval {
         Params.PASSED_PAWN_CONNECTED_BONUS_EG = 20;
         Params.PASSED_PAWN_BLOCKER_PENALTY_MG = -10;
         Params.PASSED_PAWN_BLOCKER_PENALTY_EG = -20;
+        Params.CANDIDATE_PASSED_PAWN_BONUS_MG = 5;
+        Params.CANDIDATE_PASSED_PAWN_BONUS_EG = 15;
+        Params.PAWN_MAJORITY_BONUS_MG = 4;
+        Params.PAWN_MAJORITY_BONUS_EG = 12;
 
         int passed_rank_mg[] = { 0, 10, 10, 20, 40, 60, 100, 0 };
         int passed_rank_eg[] = { 0, 20, 20, 40, 80, 120, 200, 0 };
