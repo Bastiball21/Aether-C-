@@ -54,8 +54,10 @@ class ThreadPool;
 
 struct SearchContext {
     std::atomic<bool> stop_flag{false};
-    int64_t allocated_time_limit = 0;
+    int64_t soft_time_limit = 0;
+    int64_t hard_time_limit = 0;
     int64_t nodes_limit_count = 0;
+    std::atomic<bool> unstable_iteration{false};
     std::chrono::steady_clock::time_point start_time;
     std::unique_ptr<ThreadPool> pool;
 
