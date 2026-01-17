@@ -648,6 +648,12 @@ void run_datagen(const DatagenConfig& config) {
                         eval_stm, 2000, MATE_THRESHOLD, 2000);
                     int16_t clamped = static_cast<int16_t>(clamped_eval);
                     uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
+                    bool gap_skip = false;
+                    if (config.gap_skip_cp > 0 && search_result.root_scores.size() >= 2) {
+                        int gap_cp = std::abs(search_result.root_scores[0].score
+                            - search_result.root_scores[1].score);
+                        gap_skip = gap_cp > config.gap_skip_cp;
+                    }
 
                     if (config.adjudicate) {
                         bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
@@ -729,7 +735,7 @@ void run_datagen(const DatagenConfig& config) {
                         }
                     }
 
-                    if (should_keep && depth_or_nodes_ok && pv_ok
+                    if (should_keep && depth_or_nodes_ok && pv_ok && !gap_skip
                         && !recent_positions.contains(pos.key())) {
                         recent_positions.insert(pos.key());
                         DatagenRecord record{};

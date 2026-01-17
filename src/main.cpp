@@ -309,6 +309,9 @@ int main(int argc, char* argv[]) {
                 } else if (opt == "--balance-extreme-keep" && j + 1 < argc) {
                     cfg.balance_extreme_keep = std::stoi(argv[j + 1]);
                     j += 1;
+                } else if (opt == "--gap-skip-cp" && j + 1 < argc) {
+                    cfg.gap_skip_cp = std::stoi(argv[j + 1]);
+                    j += 1;
                 } else if (opt == "--writer-lru-size" && j + 1 < argc) {
                     cfg.writer_lru_size = static_cast<size_t>(std::stoull(argv[j + 1]));
                     j += 1;
@@ -356,6 +359,10 @@ int main(int argc, char* argv[]) {
             }
             if (cfg.search_nodes_jitter < 0.0) {
                 std::cerr << "nodes-jitter must be >= 0\n";
+                return 1;
+            }
+            if (cfg.gap_skip_cp < 0) {
+                std::cerr << "gap-skip-cp must be >= 0\n";
                 return 1;
             }
 
