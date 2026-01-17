@@ -54,6 +54,10 @@ public:
 private:
     int thread_id;
     std::atomic<long long> node_count;
+    uint16_t best_move;
+    int best_score;
+    int depth_reached;
+    int pv_length;
 
     std::thread worker_thread;
     std::mutex mutex;
