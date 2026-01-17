@@ -688,6 +688,12 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
     int moves_searched = 0;
     int best_score = -INFINITY_SCORE;
     uint16_t best_move = 0;
+    Square prev_to = SQ_NONE;
+    Piece prev_pc = NO_PIECE;
+    if (prev_move != 0) {
+        prev_to = (Square)(prev_move & 0x3F);
+        prev_pc = pos.piece_on(prev_to);
+    }
 
     // PV Search Loop
     while ((move = mp.next())) {
@@ -715,10 +721,21 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         int side = pos.side_to_move();
         Piece pc = pos.piece_on(f);
         int pt = pc % 6;
+        int history_score = 0;
+        if (is_quiet && limits.use_history) {
+            history_score = History[side][pt][t];
+            if (prev_pc != NO_PIECE && prev_to != SQ_NONE) {
+                history_score += ContHistory[side][prev_pc % 6][prev_to][pt][t];
+            }
+        }
+        if (!is_pv && !in_check && is_quiet && depth <= SearchParams::HISTORY_PRUNE_DEPTH && limits.use_history) {
+            if (history_score < SearchParams::HISTORY_PRUNE_THRESHOLD) {
+                continue;
+            }
+        }
         double history_norm = 0.0;
         if (is_quiet) {
-            int history_score = History[side][pt][t];
-            int history_clamped = std::clamp(history_score, 0, MAX_HISTORY);
+            int history_clamped = std::clamp(History[side][pt][t], 0, MAX_HISTORY);
             history_norm = static_cast<double>(history_clamped) / MAX_HISTORY;
         }
 
