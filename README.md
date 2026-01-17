@@ -110,6 +110,7 @@ Optional flags:
 - `--random-plies <n>`: random opening plies applied after the seed position.
 - `--nodes <n>`: fixed node budget per move (takes priority when > 0).
 - `--depth <n>`: fixed depth for move selection when nodes is not set.
+- `--gap-skip-cp <n>`: skip recording positions where the best move leads by more than this CP gap over the runner-up.
 
 ### Datagen command
 
