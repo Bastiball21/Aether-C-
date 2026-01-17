@@ -26,7 +26,8 @@ uint8_t encode_result(float game_result, bool stm_is_black) {
 
 } // namespace
 
-void pack_position(const Position& pos, int16_t score_stm, float game_result, PackedBoard& dest) {
+void pack_position(const Position& pos, int16_t score_stm, uint8_t wdl, float game_result,
+    PackedBoard& dest) {
     Bitboard occ = pos.pieces(WHITE) | pos.pieces(BLACK);
     dest.occupancy = occ;
 
@@ -56,9 +57,8 @@ void pack_position(const Position& pos, int16_t score_stm, float game_result, Pa
     dest.halfmove = static_cast<uint8_t>(std::min(255, pos.rule50_count()));
     dest.fullmove = static_cast<uint16_t>(std::min(65535, pos.fullmove_number()));
     dest.score = score_stm;
-
+    dest.wdl = wdl;
     dest.result = encode_result(game_result, pos.side_to_move() == BLACK);
-    dest.pad = 0;
 }
 
 void set_packed_result(PackedBoard& dest, float game_result) {

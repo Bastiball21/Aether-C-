@@ -3,6 +3,7 @@
 #include "packed_board.h"
 #include "eval/eval.h"
 #include "movegen.h"
+#include "eval/eval_util.h"
 #include "position.h"
 #include "search.h"
 #include <algorithm>
@@ -28,19 +29,16 @@
 
 namespace {
 
-constexpr int MERCY_CP = 1000;
-constexpr int MERCY_PLIES = 8;
-constexpr int WIN_CP = 700;
-constexpr int WIN_STABLE_PLIES = 6;
-constexpr int DRAW_CP = 50;
-constexpr int DRAW_PLIES = 20;
+constexpr int MERCY_CP = 1200;
+constexpr int MERCY_PLIES = 10;
+constexpr int WIN_CP = 800;
+constexpr int WIN_STABLE_PLIES = 8;
+constexpr int DRAW_CP = 40;
+constexpr int DRAW_PLIES = 24;
 constexpr int DRAW_START_PLY = 30;
 constexpr int MAX_PLIES = 200;
 constexpr int OPENING_SKIP_PLIES = 10;
 constexpr int MATE_THRESHOLD = 20000;
-constexpr int MATE_CAP = 3000;
-constexpr int MATE_SCORE = 31000;
-
 std::atomic<bool> stop_flag(false);
 std::mutex search_mutex;
 
@@ -345,14 +343,6 @@ bool apply_uci_move(Position& pos, const std::string& token) {
     return false;
 }
 
-int16_t clamp_score(int score) {
-    int clamped = std::clamp(score, -32000, 32000);
-    if (std::abs(clamped) >= MATE_THRESHOLD) {
-        clamped = clamped > 0 ? MATE_CAP : -MATE_CAP;
-    }
-    return static_cast<int16_t>(clamped);
-}
-
 } // namespace
 
 void run_datagen(const DatagenConfig& config) {
@@ -485,7 +475,10 @@ void run_datagen(const DatagenConfig& config) {
                     }
 
                     int eval_stm = search_result.best_score_cp;
-                    int16_t clamped = clamp_score(eval_stm);
+                    int clamped_eval = EvalUtil::clamp_score_cp(
+                        eval_stm, 2000, MATE_THRESHOLD, 2000);
+                    int16_t clamped = static_cast<int16_t>(clamped_eval);
+                    uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
 
                     if (std::abs(clamped) >= MERCY_CP) {
                         mercy_counter += 1;
@@ -535,7 +528,7 @@ void run_datagen(const DatagenConfig& config) {
 
                     if (should_keep) {
                         PackedBoard packed{};
-                        pack_position(pos, clamped, 0.5f, packed);
+                        pack_position(pos, clamped, wdl, 0.5f, packed);
                         records.push_back({packed});
                     }
 
@@ -645,9 +638,12 @@ void convert_pgn(const std::string& pgn_path, const std::string& output_path) {
             }
 
             int eval_stm = Eval::evaluate(pos);
-            int16_t clamped = clamp_score(eval_stm);
+            int clamped_eval = EvalUtil::clamp_score_cp(
+                eval_stm, 2000, MATE_THRESHOLD, 2000);
+            int16_t clamped = static_cast<int16_t>(clamped_eval);
+            uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
             PackedBoard packed{};
-            pack_position(pos, clamped, result, packed);
+            pack_position(pos, clamped, wdl, result, packed);
             DatagenRecord record{packed};
             write_record(output, record);
 
