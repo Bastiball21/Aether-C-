@@ -55,7 +55,9 @@ struct TTBucket {
 class TranspositionTable {
 public:
     TranspositionTable(size_t size_mb = 16);
+    ~TranspositionTable();
     void resize(size_t size_mb);
+    void set_large_pages(bool enabled);
     void clear();
     void new_search(); // Increment generation
 
@@ -66,8 +68,15 @@ public:
     int hashfull() const;
 
 private:
-    std::vector<TTBucket> buckets;
+    void release();
+    bool allocate_large_pages(size_t bytes);
+    void allocate_standard(size_t bucket_count);
+
+    std::vector<TTBucket> fallback_buckets;
+    TTBucket* buckets = nullptr;
     size_t num_buckets;
+    bool use_large_pages = false;
+    bool using_large_pages = false;
     uint8_t current_gen; // 0-255, but we only use 6 bits
 };
 
