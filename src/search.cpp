@@ -950,6 +950,19 @@ void SearchWorker::iter_deep() {
 
         // Output Info (Master)
         if (thread_id == 0) {
+             root_scores.clear();
+             root_scores.reserve(root_moves.size());
+             for (const auto& rm : root_moves) {
+                 root_scores.push_back({rm.move, rm.score});
+             }
+             std::stable_sort(root_scores.begin(), root_scores.end(),
+                 [](const SearchResult::RootScore& a, const SearchResult::RootScore& b) {
+                     if (a.score != b.score) {
+                         return a.score > b.score;
+                     }
+                     return a.move < b.move;
+                 });
+
              auto now = steady_clock::now();
              long long ms = duration_cast<milliseconds>(now - start_time).count();
              long long us = duration_cast<microseconds>(now - start_time).count();
@@ -1074,6 +1087,7 @@ SearchResult Search::search(Position& pos, const SearchLimits& limits) {
         result.best_score_cp = GlobalPool.master->best_score;
         result.depth_reached = GlobalPool.master->depth_reached;
         result.pv_length = GlobalPool.master->pv_length;
+        result.root_scores = GlobalPool.master->root_scores;
     }
     return result;
 }

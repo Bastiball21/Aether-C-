@@ -58,6 +58,7 @@ private:
     int best_score;
     int depth_reached;
     int pv_length;
+    std::vector<SearchResult::RootScore> root_scores;
 
     std::thread worker_thread;
     std::mutex mutex;
