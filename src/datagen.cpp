@@ -6,6 +6,7 @@
 #include "eval/eval_util.h"
 #include "position.h"
 #include "search.h"
+#include "syzygy.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -36,6 +37,9 @@ constexpr int WIN_STABLE_PLIES = 8;
 constexpr int DRAW_CP = 40;
 constexpr int DRAW_PLIES = 24;
 constexpr int DRAW_START_PLY = 30;
+constexpr int MIN_ADJUDICATE_DEPTH = 10;
+constexpr int STABLE_SCORE_DELTA = 40;
+constexpr int STABLE_SCORE_PLIES = 6;
 constexpr int MAX_PLIES = 200;
 constexpr int OPENING_SKIP_PLIES = 10;
 constexpr int MATE_THRESHOLD = 20000;
@@ -436,6 +440,9 @@ void run_datagen(const DatagenConfig& config) {
                 int mercy_counter = 0;
                 int win_counter = 0;
                 int draw_counter = 0;
+                int stable_score_counter = 0;
+                int last_eval = 0;
+                bool has_last_eval = false;
                 float result = 0.5f;
                 bool finished = false;
 
@@ -448,6 +455,20 @@ void run_datagen(const DatagenConfig& config) {
                     if (is_trivial_endgame(pos)) {
                         result = 0.5f;
                         break;
+                    }
+
+                    if (Syzygy::enabled() && Bitboards::count(pos.pieces()) <= 7) {
+                        int tb_score = 0;
+                        if (Syzygy::probe_wdl(pos, tb_score, 0)) {
+                            if (tb_score > 0) {
+                                result = (pos.side_to_move() == WHITE) ? 1.0f : 0.0f;
+                            } else if (tb_score < 0) {
+                                result = (pos.side_to_move() == WHITE) ? 0.0f : 1.0f;
+                            } else {
+                                result = 0.5f;
+                            }
+                            break;
+                        }
                     }
 
                     MoveGen::MoveList list;
@@ -480,38 +501,59 @@ void run_datagen(const DatagenConfig& config) {
                     int16_t clamped = static_cast<int16_t>(clamped_eval);
                     uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
 
-                    if (std::abs(clamped) >= MERCY_CP) {
-                        mercy_counter += 1;
-                    } else {
-                        mercy_counter = 0;
-                    }
-                    if (mercy_counter >= MERCY_PLIES) {
-                        result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
-                                              : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
-                        break;
-                    }
-
-                    if (std::abs(clamped) >= WIN_CP) {
-                        win_counter += 1;
-                    } else {
-                        win_counter = 0;
-                    }
-                    if (win_counter >= WIN_STABLE_PLIES) {
-                        result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
-                                              : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
-                        break;
-                    }
-
-                    if (ply >= DRAW_START_PLY) {
-                        if (std::abs(clamped) <= DRAW_CP) {
-                            draw_counter += 1;
+                    bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
+                    if (depth_ok) {
+                        if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
+                            stable_score_counter += 1;
                         } else {
-                            draw_counter = 0;
+                            stable_score_counter = 0;
                         }
-                        if (draw_counter >= DRAW_PLIES) {
-                            result = 0.5f;
+                        last_eval = eval_stm;
+                        has_last_eval = true;
+                    } else {
+                        stable_score_counter = 0;
+                        has_last_eval = false;
+                    }
+
+                    bool stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
+                    if (stability_ok) {
+                        if (std::abs(clamped) >= MERCY_CP) {
+                            mercy_counter += 1;
+                        } else {
+                            mercy_counter = 0;
+                        }
+                        if (mercy_counter >= MERCY_PLIES) {
+                            result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
+                                                  : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
                             break;
                         }
+
+                        if (std::abs(clamped) >= WIN_CP) {
+                            win_counter += 1;
+                        } else {
+                            win_counter = 0;
+                        }
+                        if (win_counter >= WIN_STABLE_PLIES) {
+                            result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
+                                                  : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
+                            break;
+                        }
+
+                        if (ply >= DRAW_START_PLY) {
+                            if (std::abs(clamped) <= DRAW_CP) {
+                                draw_counter += 1;
+                            } else {
+                                draw_counter = 0;
+                            }
+                            if (draw_counter >= DRAW_PLIES) {
+                                result = 0.5f;
+                                break;
+                            }
+                        }
+                    } else {
+                        mercy_counter = 0;
+                        win_counter = 0;
+                        draw_counter = 0;
                     }
 
                     bool should_keep = false;
