@@ -710,6 +710,18 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
              if (static_eval + fmargin <= alpha) break; // Prune remaining quiets
         }
 
+        Square f = (Square)((move >> 6) & 0x3F);
+        Square t = (Square)(move & 0x3F);
+        int side = pos.side_to_move();
+        Piece pc = pos.piece_on(f);
+        int pt = pc % 6;
+        double history_norm = 0.0;
+        if (is_quiet) {
+            int history_score = History[side][pt][t];
+            int history_clamped = std::clamp(history_score, 0, MAX_HISTORY);
+            history_norm = static_cast<double>(history_clamped) / MAX_HISTORY;
+        }
+
         pos.make_move(move);
         if (pos.is_attacked((Square)Bitboards::lsb(pos.pieces(KING, ~pos.side_to_move())), pos.side_to_move())) {
             pos.unmake_move(move);
@@ -732,9 +744,10 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
                 reduction = LMRTable[d][m];
                 if (is_killer) reduction -= 1;
                 if (!is_pv) reduction += 1;
-                // Reduce less if we have good history
-                // if (history > ...) reduction--;
-                if (reduction < 0) reduction = 0;
+                if (history_norm > 0.75) reduction -= 1;
+                else if (history_norm < 0.25) reduction += 1;
+                int max_reduction = std::min(depth - 1, 6);
+                reduction = std::clamp(reduction, 0, max_reduction);
             }
 
             score = -negamax(pos, depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, true, move, 0);
