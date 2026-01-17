@@ -46,7 +46,6 @@ constexpr int MAX_PLIES = 200;
 constexpr int OPENING_SKIP_PLIES = 10;
 constexpr int MATE_THRESHOLD = 20000;
 std::atomic<bool> stop_flag(false);
-std::mutex search_mutex;
 
 std::string trim_copy(const std::string& input) {
     const auto start = input.find_first_not_of(" \t\r\n");
@@ -540,6 +539,7 @@ void run_datagen(const DatagenConfig& config) {
         workers.emplace_back([&, t] {
             uint64_t thread_seed = mix_seed(config.seed, static_cast<uint64_t>(t));
             Rng rng(thread_seed);
+            SearchContext search_context;
 
             for (;;) {
                 if (done.load() || stop_flag.load()) {
@@ -616,13 +616,9 @@ void run_datagen(const DatagenConfig& config) {
                     limits.silent = true;
                     limits.seed = rng.next_u64();
 
-                    SearchResult search_result;
-                    {
-                        std::lock_guard<std::mutex> lock(search_mutex);
-                        search_result = Search::search(pos, limits);
-                        nodes_total.fetch_add(static_cast<long>(Search::get_node_count()));
-                    }
-                    int64_t search_nodes = Search::get_node_count();
+                    SearchResult search_result = Search::search(pos, limits, search_context);
+                    nodes_total.fetch_add(static_cast<long>(search_context.get_node_count()));
+                    int64_t search_nodes = search_context.get_node_count();
 
                     int eval_stm = search_result.best_score_cp;
                     int clamped_eval = EvalUtil::clamp_score_cp(
