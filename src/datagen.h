@@ -32,6 +32,7 @@ struct DatagenConfig {
     int balance_extreme_keep = 25;
     size_t record_lru_size = 8192;
     PackedFormat output_format = PackedFormat::V2;
+    bool adjudicate = true;
 };
 
 void run_datagen(const DatagenConfig& config);

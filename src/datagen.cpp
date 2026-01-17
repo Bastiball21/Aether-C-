@@ -74,6 +74,17 @@ std::string format_count(double value) {
     return out.str();
 }
 
+uint64_t splitmix64(uint64_t v) {
+    uint64_t z = v + 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+uint64_t mix_seed(uint64_t base, uint64_t salt) {
+    return splitmix64(base + 0x9e3779b97f4a7c15ULL * (salt + 1));
+}
+
 void handle_sigint(int) {
     stop_flag.store(true);
 }
@@ -111,10 +122,7 @@ struct Rng {
     }
 
     uint64_t splitmix(uint64_t v) {
-        uint64_t z = v + 0x9e3779b97f4a7c15ULL;
-        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-        return z ^ (z >> 31);
+        return splitmix64(v);
     }
 
     double uniform_01() {
@@ -530,7 +538,8 @@ void run_datagen(const DatagenConfig& config) {
     std::vector<std::thread> workers;
     for (int t = 0; t < config.num_threads; ++t) {
         workers.emplace_back([&, t] {
-            Rng rng(config.seed + static_cast<uint64_t>(t) * 0xDEADBEEF);
+            uint64_t thread_seed = mix_seed(config.seed, static_cast<uint64_t>(t));
+            Rng rng(thread_seed);
 
             for (;;) {
                 if (done.load() || stop_flag.load()) {
@@ -545,7 +554,7 @@ void run_datagen(const DatagenConfig& config) {
                     pos.set_startpos();
                 }
 
-                uint64_t rolling_hash = rng.splitmix(config.seed ^ pos.key());
+                uint64_t rolling_hash = mix_seed(thread_seed, pos.key());
                 std::vector<DatagenRecord> records;
                 records.reserve(256);
                 std::unordered_map<Key, int> repetition_counts;
@@ -621,59 +630,61 @@ void run_datagen(const DatagenConfig& config) {
                     int16_t clamped = static_cast<int16_t>(clamped_eval);
                     uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
 
-                    bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
-                    if (depth_ok) {
-                        if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
-                            stable_score_counter += 1;
+                    if (config.adjudicate) {
+                        bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
+                        if (depth_ok) {
+                            if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
+                                stable_score_counter += 1;
+                            } else {
+                                stable_score_counter = 0;
+                            }
+                            last_eval = eval_stm;
+                            has_last_eval = true;
                         } else {
                             stable_score_counter = 0;
-                        }
-                        last_eval = eval_stm;
-                        has_last_eval = true;
-                    } else {
-                        stable_score_counter = 0;
-                        has_last_eval = false;
-                    }
-
-                    bool stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
-                    if (stability_ok) {
-                        if (std::abs(clamped) >= MERCY_CP) {
-                            mercy_counter += 1;
-                        } else {
-                            mercy_counter = 0;
-                        }
-                        if (mercy_counter >= MERCY_PLIES) {
-                            result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
-                                                  : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
-                            break;
+                            has_last_eval = false;
                         }
 
-                        if (std::abs(clamped) >= WIN_CP) {
-                            win_counter += 1;
-                        } else {
-                            win_counter = 0;
-                        }
-                        if (win_counter >= WIN_STABLE_PLIES) {
-                            result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
-                                                  : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
-                            break;
-                        }
-
-                        if (ply >= DRAW_START_PLY) {
-                            if (std::abs(clamped) <= DRAW_CP) {
-                                draw_counter += 1;
+                        bool stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
+                        if (stability_ok) {
+                            if (std::abs(clamped) >= MERCY_CP) {
+                                mercy_counter += 1;
                             } else {
-                                draw_counter = 0;
+                                mercy_counter = 0;
                             }
-                            if (draw_counter >= DRAW_PLIES) {
-                                result = 0.5f;
+                            if (mercy_counter >= MERCY_PLIES) {
+                                result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
+                                                      : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
                                 break;
                             }
+
+                            if (std::abs(clamped) >= WIN_CP) {
+                                win_counter += 1;
+                            } else {
+                                win_counter = 0;
+                            }
+                            if (win_counter >= WIN_STABLE_PLIES) {
+                                result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
+                                                      : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
+                                break;
+                            }
+
+                            if (ply >= DRAW_START_PLY) {
+                                if (std::abs(clamped) <= DRAW_CP) {
+                                    draw_counter += 1;
+                                } else {
+                                    draw_counter = 0;
+                                }
+                                if (draw_counter >= DRAW_PLIES) {
+                                    result = 0.5f;
+                                    break;
+                                }
+                            }
+                        } else {
+                            mercy_counter = 0;
+                            win_counter = 0;
+                            draw_counter = 0;
                         }
-                    } else {
-                        mercy_counter = 0;
-                        win_counter = 0;
-                        draw_counter = 0;
                     }
 
                     bool depth_or_nodes_ok = true;
