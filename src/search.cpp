@@ -401,11 +401,17 @@ void SearchWorker::check_limits() {
         context->stop_flag = true;
         return;
     }
-    if (context->allocated_time_limit > 0) {
+    if (context->hard_time_limit > 0 || context->soft_time_limit > 0) {
         auto now = steady_clock::now();
         long long ms = duration_cast<milliseconds>(now - context->start_time).count();
-        if (ms >= context->allocated_time_limit) {
+        if (context->hard_time_limit > 0 && ms >= context->hard_time_limit) {
             context->stop_flag = true;
+            return;
+        }
+        if (context->soft_time_limit > 0 && ms >= context->soft_time_limit) {
+            if (!context->unstable_iteration.load(std::memory_order_relaxed)) {
+                context->stop_flag = true;
+            }
         }
     }
 }
@@ -858,6 +864,7 @@ void SearchWorker::iter_deep() {
         best_score = 0;
         depth_reached = 0;
         pv_length = 0;
+        context->unstable_iteration.store(false, std::memory_order_relaxed);
     }
 
     // Syzygy Root Probe (Master Only)
@@ -910,6 +917,9 @@ void SearchWorker::iter_deep() {
     int max_depth = limits.depth > 0 ? limits.depth : MAX_PLY;
     int best_val = -INFINITY_SCORE;
     uint16_t best_move = 0;
+    uint16_t prev_best_move = 0;
+    int prev_best_score = 0;
+    bool have_prev = false;
 
     for (int depth = 1; depth <= max_depth; depth++) {
         if (context->stop_flag) break;
@@ -1020,6 +1030,16 @@ void SearchWorker::iter_deep() {
              depth_reached = depth;
              pv_length = pv_length_from_move(pos, best_move);
 
+             bool unstable = false;
+             if (have_prev) {
+                 if (best_move != prev_best_move) unstable = true;
+                 if (best_val < prev_best_score) unstable = true;
+             }
+             context->unstable_iteration.store(unstable, std::memory_order_relaxed);
+             prev_best_move = best_move;
+             prev_best_score = best_val;
+             have_prev = true;
+
              if (!limits.silent) {
                  std::cout << "info depth " << depth << " score " << score_str
                            << " time " << ms << " nodes " << context->pool->get_total_nodes()
@@ -1100,23 +1120,29 @@ SearchResult Search::search(Position& pos, const SearchLimits& limits, SearchCon
     context.stop_flag = false;
     context.start_time = steady_clock::now();
     context.nodes_limit_count = limits.nodes;
+    context.unstable_iteration.store(false, std::memory_order_relaxed);
 
     // Time Management
-    context.allocated_time_limit = 0;
+    context.soft_time_limit = 0;
+    context.hard_time_limit = 0;
     if (!limits.infinite && limits.move_time == 0) {
          int color = pos.side_to_move();
          int t = limits.time[color];
          int i = limits.inc[color];
          int m = limits.movestogo > 0 ? limits.movestogo : 30;
          if (t > 0) {
-             context.allocated_time_limit = (t / m) + (i * 3 / 4);
-             if (context.allocated_time_limit > t - 50) {
-                 context.allocated_time_limit = t - 50;
-             }
+             int safe_time = std::max(0, t - limits.move_overhead_ms);
+             int base_time = (t / m) + (i * 3 / 4);
+             int soft_limit = std::min(base_time, safe_time);
+             int hard_limit = std::min((t / m) + i, safe_time);
+             context.soft_time_limit = soft_limit;
+             context.hard_time_limit = std::max<int64_t>(soft_limit, hard_limit);
          }
     } else if (limits.move_time > 0) {
         // Modified: Use move_overhead_ms
-        context.allocated_time_limit = limits.move_time - limits.move_overhead_ms;
+        int64_t limit = std::max(0, limits.move_time - limits.move_overhead_ms);
+        context.soft_time_limit = limit;
+        context.hard_time_limit = limit;
     }
 
     TTable.new_search();
