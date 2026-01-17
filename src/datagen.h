@@ -14,6 +14,7 @@ struct DatagenConfig {
     std::string opening_book_path;
     int opening_random_plies = 8;
     int64_t search_nodes = 0;
+    double search_nodes_jitter = 0.2;
     int search_depth = 1;
     int sample_top_n = 4;
     int sample_top_k = 4;

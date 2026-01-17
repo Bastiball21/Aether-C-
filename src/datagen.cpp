@@ -130,6 +130,23 @@ struct Rng {
     }
 };
 
+int64_t jitter_search_nodes(const DatagenConfig& config, Rng& rng) {
+    if (config.search_nodes <= 0) {
+        return 0;
+    }
+
+    double jitter = std::max(0.0, config.search_nodes_jitter);
+    if (jitter <= 0.0) {
+        return std::max<int64_t>(1, config.search_nodes);
+    }
+
+    double offset = (rng.uniform_01() * 2.0 - 1.0) * jitter;
+    double factor = std::max(0.0, 1.0 + offset);
+    double adjusted = static_cast<double>(config.search_nodes) * factor;
+    int64_t nodes = static_cast<int64_t>(std::llround(adjusted));
+    return std::max<int64_t>(1, nodes);
+}
+
 class LruKeySet {
 public:
     explicit LruKeySet(size_t capacity) : capacity_(capacity) {}
@@ -559,6 +576,7 @@ void run_datagen(const DatagenConfig& config) {
                     pos.set_startpos();
                 }
 
+                int64_t game_search_nodes = jitter_search_nodes(config, rng);
                 uint64_t rolling_hash = mix_seed(thread_seed, pos.key());
                 std::vector<DatagenRecord> records;
                 records.reserve(256);
@@ -617,7 +635,7 @@ void run_datagen(const DatagenConfig& config) {
 
                     SearchLimits limits;
                     limits.depth = std::max(1, config.search_depth);
-                    limits.nodes = config.search_nodes;
+                    limits.nodes = game_search_nodes;
                     limits.silent = true;
                     limits.seed = rng.next_u64();
 
