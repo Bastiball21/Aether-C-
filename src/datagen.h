@@ -1,6 +1,7 @@
 #ifndef DATAGEN_H
 #define DATAGEN_H
 
+#include "packed_board_io.h"
 #include <cstdint>
 #include <string>
 
@@ -30,9 +31,11 @@ struct DatagenConfig {
     int balance_moderate_keep = 50;
     int balance_extreme_keep = 25;
     size_t record_lru_size = 8192;
+    PackedFormat output_format = PackedFormat::V2;
 };
 
 void run_datagen(const DatagenConfig& config);
-void convert_pgn(const std::string& pgn_path, const std::string& output_path);
+void convert_pgn(const std::string& pgn_path, const std::string& output_path,
+    PackedFormat format = PackedFormat::V2);
 
 #endif // DATAGEN_H

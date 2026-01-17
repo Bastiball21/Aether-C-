@@ -4,6 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <vector>
+#include <optional>
 #include "position.h"
 #include "search.h"
 #include "tt.h"
@@ -12,6 +13,7 @@
 #include "eval/eval.h"
 #include "eval/eval_tune.h"
 #include "datagen.h"
+#include "packed_board_io.h"
 #include "syzygy.h"
 
 // Parse move string to uint16_t
@@ -87,6 +89,16 @@ void join_search() {
     }
 }
 
+std::optional<PackedFormat> parse_packed_format(const std::string& value) {
+    if (value == "v1") {
+        return PackedFormat::V1;
+    }
+    if (value == "v2") {
+        return PackedFormat::V2;
+    }
+    return std::nullopt;
+}
+
 int main(int argc, char* argv[]) {
     // I/O Speedup
     std::ios::sync_with_stdio(false);
@@ -102,6 +114,62 @@ int main(int argc, char* argv[]) {
             Eval::tune_epd(argv[i+1], argv[i+2]);
             return 0;
         }
+        if (arg == "pack-convert" && i + 2 < argc) {
+            std::string input_path = argv[i + 1];
+            std::string output_path = argv[i + 2];
+            i += 2;
+            std::optional<PackedFormat> forced_format;
+            for (; i + 1 < argc; i++) {
+                std::string opt = argv[i];
+                if (opt == "--format" && i + 1 < argc) {
+                    forced_format = parse_packed_format(argv[i + 1]);
+                    if (!forced_format.has_value()) {
+                        std::cerr << "invalid format (expected v1 or v2)\n";
+                        return 1;
+                    }
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if (forced_format.has_value() && forced_format.value() != PackedFormat::V1) {
+                std::cerr << "pack-convert expects a v1 input format\n";
+                return 1;
+            }
+
+            std::string error;
+            if (!convert_packed_v1_to_v2(input_path, output_path, true, error)) {
+                std::cerr << "conversion failed: " << error << "\n";
+                return 1;
+            }
+            return 0;
+        }
+        if (arg == "pack-verify" && i + 1 < argc) {
+            std::string input_path = argv[i + 1];
+            i += 1;
+            std::optional<PackedFormat> forced_format;
+            for (; i + 1 < argc; i++) {
+                std::string opt = argv[i];
+                if (opt == "--format" && i + 1 < argc) {
+                    forced_format = parse_packed_format(argv[i + 1]);
+                    if (!forced_format.has_value()) {
+                        std::cerr << "invalid format (expected v1 or v2)\n";
+                        return 1;
+                    }
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+
+            std::string error;
+            if (!verify_packed_board_file(input_path, forced_format, error)) {
+                std::cerr << "verify failed: " << error << "\n";
+                return 1;
+            }
+            return 0;
+        }
         if (arg == "datagen" && i + 3 < argc) {
             DatagenConfig cfg;
             cfg.num_games = std::stoll(argv[i + 1]);
@@ -111,7 +179,15 @@ int main(int argc, char* argv[]) {
 
             for (; i + 1 < argc; i++) {
                 std::string opt = argv[i];
-                if (opt == "--seed" && i + 1 < argc) {
+                if (opt == "--format" && i + 1 < argc) {
+                    auto parsed = parse_packed_format(argv[i + 1]);
+                    if (!parsed.has_value()) {
+                        std::cerr << "invalid format (expected v1 or v2)\n";
+                        return 1;
+                    }
+                    cfg.output_format = parsed.value();
+                    i += 1;
+                } else if (opt == "--seed" && i + 1 < argc) {
                     cfg.seed = std::stoull(argv[i + 1]);
                     i += 1;
                 } else if (opt == "--book" && i + 1 < argc) {
