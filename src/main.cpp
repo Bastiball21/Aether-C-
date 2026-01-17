@@ -99,6 +99,18 @@ std::optional<PackedFormat> parse_packed_format(const std::string& value) {
     return std::nullopt;
 }
 
+bool parse_bool_value(const std::string& value, bool& out) {
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        out = true;
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
 int main(int argc, char* argv[]) {
     // I/O Speedup
     std::ios::sync_with_stdio(false);
@@ -170,87 +182,174 @@ int main(int argc, char* argv[]) {
             }
             return 0;
         }
-        if (arg == "datagen" && i + 3 < argc) {
+        if (arg == "datagen") {
             DatagenConfig cfg;
-            cfg.num_games = std::stoll(argv[i + 1]);
-            cfg.num_threads = std::stoi(argv[i + 2]);
-            cfg.output_path = argv[i + 3];
-            i += 3;
+            bool has_games = false;
+            bool has_threads = false;
+            bool has_out = false;
+            std::string syzygy_path;
 
-            for (; i + 1 < argc; i++) {
-                std::string opt = argv[i];
-                if (opt == "--format" && i + 1 < argc) {
-                    auto parsed = parse_packed_format(argv[i + 1]);
+            int j = i + 1;
+            if (j + 2 < argc && argv[j][0] != '-' && argv[j + 1][0] != '-'
+                && argv[j + 2][0] != '-') {
+                cfg.num_games = std::stoll(argv[j]);
+                cfg.num_threads = std::stoi(argv[j + 1]);
+                cfg.output_path = argv[j + 2];
+                has_games = true;
+                has_threads = true;
+                has_out = true;
+                j += 3;
+            }
+
+            for (; j < argc; ++j) {
+                std::string opt = argv[j];
+                if (opt == "--format" && j + 1 < argc) {
+                    auto parsed = parse_packed_format(argv[j + 1]);
                     if (!parsed.has_value()) {
                         std::cerr << "invalid format (expected v1 or v2)\n";
                         return 1;
                     }
                     cfg.output_format = parsed.value();
-                    i += 1;
-                } else if (opt == "--seed" && i + 1 < argc) {
-                    cfg.seed = std::stoull(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--book" && i + 1 < argc) {
-                    cfg.opening_book_path = argv[i + 1];
-                    i += 1;
-                } else if (opt == "--random-plies" && i + 1 < argc) {
-                    cfg.opening_random_plies = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--nodes" && i + 1 < argc) {
-                    cfg.search_nodes = std::stoll(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--depth" && i + 1 < argc) {
-                    cfg.search_depth = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--sample-top-n" && i + 1 < argc) {
-                    cfg.sample_top_n = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--sample-top-k" && i + 1 < argc) {
-                    cfg.sample_top_k = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--temp-start" && i + 1 < argc) {
-                    cfg.temp_start = std::stod(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--temp-end" && i + 1 < argc) {
-                    cfg.temp_end = std::stod(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--temp-plies" && i + 1 < argc) {
-                    cfg.temp_schedule_plies = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--epsilon" && i + 1 < argc) {
-                    cfg.epsilon = std::stod(argv[i + 1]);
-                    i += 1;
+                    j += 1;
+                } else if (opt == "--threads" && j + 1 < argc) {
+                    cfg.num_threads = std::stoi(argv[j + 1]);
+                    has_threads = true;
+                    j += 1;
+                } else if (opt == "--games" && j + 1 < argc) {
+                    cfg.num_games = std::stoll(argv[j + 1]);
+                    has_games = true;
+                    j += 1;
+                } else if (opt == "--out" && j + 1 < argc) {
+                    cfg.output_path = argv[j + 1];
+                    has_out = true;
+                    j += 1;
+                } else if (opt == "--seed" && j + 1 < argc) {
+                    cfg.seed = std::stoull(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--book" && j + 1 < argc) {
+                    cfg.opening_book_path = argv[j + 1];
+                    j += 1;
+                } else if (opt == "--random-plies" && j + 1 < argc) {
+                    cfg.opening_random_plies = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if ((opt == "--nodes" || opt == "--nodes-per-move") && j + 1 < argc) {
+                    cfg.search_nodes = std::stoll(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--depth" && j + 1 < argc) {
+                    cfg.search_depth = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--min-depth" && j + 1 < argc) {
+                    cfg.min_depth = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--min-nodes" && j + 1 < argc) {
+                    cfg.min_nodes = std::stoll(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--record-every" && j + 1 < argc) {
+                    cfg.record_every = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--sample-top-n" && j + 1 < argc) {
+                    cfg.sample_top_n = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--sample-top-k" && j + 1 < argc) {
+                    cfg.sample_top_k = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--topk" && j + 1 < argc) {
+                    int topk = std::stoi(argv[j + 1]);
+                    cfg.sample_top_k = topk;
+                    cfg.sample_top_n = topk;
+                    j += 1;
+                } else if (opt == "--temp-start" && j + 1 < argc) {
+                    cfg.temp_start = std::stod(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--temp" && j + 1 < argc) {
+                    cfg.temp_start = std::stod(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--temp-end" && j + 1 < argc) {
+                    cfg.temp_end = std::stod(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--temp-plies" && j + 1 < argc) {
+                    cfg.temp_schedule_plies = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--epsilon" && j + 1 < argc) {
+                    cfg.epsilon = std::stod(argv[j + 1]);
+                    j += 1;
                 } else if (opt == "--epsilon-greedy") {
                     cfg.use_epsilon_greedy = true;
                 } else if (opt == "--chess960") {
                     cfg.chess960 = true;
-                } else if (opt == "--min-depth" && i + 1 < argc) {
-                    cfg.min_depth = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--min-nodes" && i + 1 < argc) {
-                    cfg.min_nodes = std::stoll(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--record-every" && i + 1 < argc) {
-                    cfg.record_every = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--balance-equal-cp" && i + 1 < argc) {
-                    cfg.balance_equal_cp = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--balance-moderate-cp" && i + 1 < argc) {
-                    cfg.balance_moderate_cp = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--balance-equal-keep" && i + 1 < argc) {
-                    cfg.balance_equal_keep = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--balance-moderate-keep" && i + 1 < argc) {
-                    cfg.balance_moderate_keep = std::stoi(argv[i + 1]);
-                    i += 1;
-                } else if (opt == "--balance-extreme-keep" && i + 1 < argc) {
-                    cfg.balance_extreme_keep = std::stoi(argv[i + 1]);
-                    i += 1;
+                } else if (opt == "--adjudicate") {
+                    bool value = true;
+                    if (j + 1 < argc && argv[j + 1][0] != '-') {
+                        if (!parse_bool_value(argv[j + 1], value)) {
+                            std::cerr << "invalid adjudicate value (expected true/false)\n";
+                            return 1;
+                        }
+                        j += 1;
+                    }
+                    cfg.adjudicate = value;
+                } else if (opt == "--syzygy" && j + 1 < argc) {
+                    syzygy_path = argv[j + 1];
+                    j += 1;
+                } else if (opt == "--balance-equal-cp" && j + 1 < argc) {
+                    cfg.balance_equal_cp = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--balance-moderate-cp" && j + 1 < argc) {
+                    cfg.balance_moderate_cp = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--balance-equal-keep" && j + 1 < argc) {
+                    cfg.balance_equal_keep = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--balance-moderate-keep" && j + 1 < argc) {
+                    cfg.balance_moderate_keep = std::stoi(argv[j + 1]);
+                    j += 1;
+                } else if (opt == "--balance-extreme-keep" && j + 1 < argc) {
+                    cfg.balance_extreme_keep = std::stoi(argv[j + 1]);
+                    j += 1;
                 } else {
-                    break;
+                    std::cerr << "unknown datagen option: " << opt << "\n";
+                    return 1;
                 }
+            }
+
+            if (!has_games || !has_threads || !has_out) {
+                std::cerr << "datagen requires --games, --threads, and --out\n";
+                return 1;
+            }
+            if (cfg.num_games <= 0 || cfg.num_threads <= 0) {
+                std::cerr << "games and threads must be positive\n";
+                return 1;
+            }
+            if (cfg.output_path.empty()) {
+                std::cerr << "output path is required\n";
+                return 1;
+            }
+            if (cfg.search_depth < 1) {
+                std::cerr << "depth must be at least 1\n";
+                return 1;
+            }
+            if (cfg.min_depth < 0) {
+                std::cerr << "min-depth must be >= 0\n";
+                return 1;
+            }
+            if (cfg.record_every <= 0) {
+                std::cerr << "record-every must be >= 1\n";
+                return 1;
+            }
+            if (cfg.sample_top_n <= 0 || cfg.sample_top_k <= 0) {
+                std::cerr << "topk must be >= 1\n";
+                return 1;
+            }
+            if (cfg.temp_start <= 0.0 || cfg.temp_end <= 0.0) {
+                std::cerr << "temperature values must be > 0\n";
+                return 1;
+            }
+            if (cfg.temp_schedule_plies < 0) {
+                std::cerr << "temp-plies must be >= 0\n";
+                return 1;
+            }
+
+            if (!syzygy_path.empty()) {
+                Syzygy::set_path(syzygy_path);
             }
 
             run_datagen(cfg);
