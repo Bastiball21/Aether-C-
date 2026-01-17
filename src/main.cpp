@@ -236,6 +236,9 @@ int main(int argc, char* argv[]) {
                 } else if ((opt == "--nodes" || opt == "--nodes-per-move") && j + 1 < argc) {
                     cfg.search_nodes = std::stoll(argv[j + 1]);
                     j += 1;
+                } else if (opt == "--nodes-jitter" && j + 1 < argc) {
+                    cfg.search_nodes_jitter = std::stod(argv[j + 1]);
+                    j += 1;
                 } else if (opt == "--depth" && j + 1 < argc) {
                     cfg.search_depth = std::stoi(argv[j + 1]);
                     j += 1;
@@ -349,6 +352,10 @@ int main(int argc, char* argv[]) {
             }
             if (cfg.temp_schedule_plies < 0) {
                 std::cerr << "temp-plies must be >= 0\n";
+                return 1;
+            }
+            if (cfg.search_nodes_jitter < 0.0) {
+                std::cerr << "nodes-jitter must be >= 0\n";
                 return 1;
             }
 
