@@ -381,8 +381,8 @@ uint16_t pick_policy_move(const SearchResult& result, Rng& rng, int ply,
 void writer_thread(std::ofstream& out, std::mutex& out_mutex, std::condition_variable& cv,
     std::queue<QueueItem>& queue, std::atomic<bool>& done, int64_t total_games,
     std::atomic<long>& games_total, std::atomic<long>& positions_total,
-    std::atomic<long>& duplicates_total) {
-    std::unordered_set<uint64_t> seen;
+    std::atomic<long>& duplicates_total, size_t writer_lru_size) {
+    LruKeySet seen(writer_lru_size);
 
     while (true) {
         std::unique_lock<std::mutex> lock(out_mutex);
@@ -395,11 +395,12 @@ void writer_thread(std::ofstream& out, std::mutex& out_mutex, std::condition_var
         queue.pop();
         lock.unlock();
 
-        if (seen.find(item.rolling_hash) != seen.end()) {
+        Key rolling_key = static_cast<Key>(item.rolling_hash);
+        if (seen.contains(rolling_key)) {
             duplicates_total.fetch_add(1);
             continue;
         }
-        seen.insert(item.rolling_hash);
+        seen.insert(rolling_key);
 
         for (const auto& record : item.records) {
             write_record(out, record, item.format);
@@ -492,10 +493,14 @@ void run_datagen(const DatagenConfig& config) {
     std::atomic<long> nodes_total(0);
     std::atomic<long> positions_total(0);
     std::atomic<long> duplicates_total(0);
+    size_t writer_lru_size = config.writer_lru_size;
+    if (writer_lru_size == 0) {
+        writer_lru_size = config.record_lru_size;
+    }
 
     std::thread writer([&] {
         writer_thread(out, out_mutex, cv, queue, done, config.num_games, games_total,
-            positions_total, duplicates_total);
+            positions_total, duplicates_total, writer_lru_size);
     });
 
     std::thread status([&] {
