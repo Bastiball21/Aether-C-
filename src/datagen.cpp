@@ -159,12 +159,14 @@ private:
 };
 
 struct DatagenRecord {
-    PackedBoard board;
+    PackedBoardV1 board_v1{};
+    PackedBoardV2 board_v2{};
 };
 
 struct QueueItem {
     uint64_t rolling_hash = 0;
     std::vector<DatagenRecord> records;
+    PackedFormat format = PackedFormat::V1;
 };
 
 struct OpeningBook {
@@ -215,8 +217,12 @@ bool is_trivial_endgame(const Position& pos) {
     return false;
 }
 
-void write_record(std::ofstream& out, const DatagenRecord& record) {
-    out.write(reinterpret_cast<const char*>(&record.board), sizeof(record.board));
+void write_record(std::ofstream& out, const DatagenRecord& record, PackedFormat format) {
+    if (format == PackedFormat::V1) {
+        out.write(reinterpret_cast<const char*>(&record.board_v1), sizeof(record.board_v1));
+    } else {
+        out.write(reinterpret_cast<const char*>(&record.board_v2), sizeof(record.board_v2));
+    }
 }
 
 OpeningBook load_epd_book(const std::string& path) {
@@ -389,7 +395,7 @@ void writer_thread(std::ofstream& out, std::mutex& out_mutex, std::condition_var
         seen.insert(item.rolling_hash);
 
         for (const auto& record : item.records) {
-            write_record(out, record);
+            write_record(out, record, item.format);
             positions_total.fetch_add(1);
         }
 
@@ -462,6 +468,13 @@ void run_datagen(const DatagenConfig& config) {
     std::ofstream out(config.output_path, std::ios::binary);
     if (!out.is_open()) {
         return;
+    }
+
+    if (config.output_format == PackedFormat::V2) {
+        PackedBoardFileHeader header = make_packed_board_header(kPackedBoardFlagHasPly);
+        if (!write_packed_board_header(out, header)) {
+            return;
+        }
     }
 
     std::mutex out_mutex;
@@ -689,9 +702,18 @@ void run_datagen(const DatagenConfig& config) {
                     if (should_keep && depth_or_nodes_ok && pv_ok
                         && !recent_positions.contains(pos.key())) {
                         recent_positions.insert(pos.key());
-                        PackedBoard packed{};
-                        pack_position(pos, clamped, wdl, 0.5f, packed);
-                        records.push_back({packed});
+                        DatagenRecord record{};
+                        if (config.output_format == PackedFormat::V1) {
+                            pack_position_v1(pos, clamped, wdl, 0.5f, record.board_v1);
+                        } else {
+                            uint8_t depth = static_cast<uint8_t>(
+                                std::min(255, search_result.depth_reached));
+                            uint16_t ply_value = static_cast<uint16_t>(
+                                std::min(65535, ply));
+                            pack_position_v2(pos, clamped, wdl, 0.5f, depth,
+                                search_result.best_move, ply_value, record.board_v2);
+                        }
+                        records.push_back(record);
                     }
 
                     uint16_t move = 0;
@@ -725,12 +747,17 @@ void run_datagen(const DatagenConfig& config) {
 
                 if (!records.empty()) {
                     for (auto& record : records) {
-                        set_packed_result(record.board, result);
+                        if (config.output_format == PackedFormat::V1) {
+                            set_packed_result(record.board_v1, result);
+                        } else {
+                            set_packed_result(record.board_v2, result);
+                        }
                     }
 
                     QueueItem item;
                     item.rolling_hash = rolling_hash;
                     item.records = std::move(records);
+                    item.format = config.output_format;
 
                     {
                         std::lock_guard<std::mutex> lock(out_mutex);
@@ -753,7 +780,8 @@ void run_datagen(const DatagenConfig& config) {
     out.flush();
 }
 
-void convert_pgn(const std::string& pgn_path, const std::string& output_path) {
+void convert_pgn(const std::string& pgn_path, const std::string& output_path,
+    PackedFormat format) {
     std::ifstream input(pgn_path);
     if (!input.is_open()) {
         return;
@@ -762,6 +790,13 @@ void convert_pgn(const std::string& pgn_path, const std::string& output_path) {
     std::ofstream output(output_path, std::ios::binary);
     if (!output.is_open()) {
         return;
+    }
+
+    if (format == PackedFormat::V2) {
+        PackedBoardFileHeader header = make_packed_board_header(kPackedBoardFlagHasPly);
+        if (!write_packed_board_header(output, header)) {
+            return;
+        }
     }
 
     Position pos;
@@ -811,6 +846,7 @@ void convert_pgn(const std::string& pgn_path, const std::string& output_path) {
             return;
         }
 
+        int ply_index = 0;
         for (const auto& tok : tokens) {
             if (tok == "." || tok.back() == '.' || tok == "1-0" || tok == "0-1"
                 || tok == "1/2-1/2" || tok == "*") {
@@ -822,14 +858,19 @@ void convert_pgn(const std::string& pgn_path, const std::string& output_path) {
                 eval_stm, 2000, MATE_THRESHOLD, 2000);
             int16_t clamped = static_cast<int16_t>(clamped_eval);
             uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
-            PackedBoard packed{};
-            pack_position(pos, clamped, wdl, result, packed);
-            DatagenRecord record{packed};
-            write_record(output, record);
+            DatagenRecord record{};
+            if (format == PackedFormat::V1) {
+                pack_position_v1(pos, clamped, wdl, result, record.board_v1);
+            } else {
+                uint16_t ply_value = static_cast<uint16_t>(std::min(65535, ply_index));
+                pack_position_v2(pos, clamped, wdl, result, 0, 0, ply_value, record.board_v2);
+            }
+            write_record(output, record, format);
 
             if (!apply_uci_move(pos, tok)) {
                 break;
             }
+            ply_index += 1;
         }
 
         move_text.clear();

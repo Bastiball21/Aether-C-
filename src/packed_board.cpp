@@ -24,10 +24,8 @@ uint8_t encode_result(float game_result, bool stm_is_black) {
     return wdl;
 }
 
-} // namespace
-
-void pack_position(const Position& pos, int16_t score_stm, uint8_t wdl, float game_result,
-    PackedBoard& dest) {
+template <typename Packed>
+void pack_common_fields(const Position& pos, Packed& dest) {
     Bitboard occ = pos.pieces(WHITE) | pos.pieces(BLACK);
     dest.occupancy = occ;
 
@@ -56,12 +54,35 @@ void pack_position(const Position& pos, int16_t score_stm, uint8_t wdl, float ga
 
     dest.halfmove = static_cast<uint8_t>(std::min(255, pos.rule50_count()));
     dest.fullmove = static_cast<uint16_t>(std::min(65535, pos.fullmove_number()));
-    dest.score = score_stm;
+}
+
+} // namespace
+
+void pack_position_v1(const Position& pos, int16_t score_stm, uint8_t wdl, float game_result,
+    PackedBoardV1& dest) {
+    pack_common_fields(pos, dest);
+    dest.score_cp = score_stm;
     dest.wdl = wdl;
     dest.result = encode_result(game_result, pos.side_to_move() == BLACK);
 }
 
-void set_packed_result(PackedBoard& dest, float game_result) {
+void pack_position_v2(const Position& pos, int16_t score_stm, uint8_t wdl, float game_result,
+    uint8_t depth_reached, uint16_t bestmove, uint16_t ply, PackedBoardV2& dest) {
+    pack_common_fields(pos, dest);
+    dest.score_cp = score_stm;
+    dest.wdl = wdl;
+    dest.result = encode_result(game_result, pos.side_to_move() == BLACK);
+    dest.depth_reached = depth_reached;
+    dest.bestmove = bestmove;
+    dest.ply = ply;
+}
+
+void set_packed_result(PackedBoardV1& dest, float game_result) {
+    bool stm_is_black = (dest.stm_ep & kSideToMoveBit) != 0;
+    dest.result = encode_result(game_result, stm_is_black);
+}
+
+void set_packed_result(PackedBoardV2& dest, float game_result) {
     bool stm_is_black = (dest.stm_ep & kSideToMoveBit) != 0;
     dest.result = encode_result(game_result, stm_is_black);
 }
