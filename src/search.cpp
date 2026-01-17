@@ -463,13 +463,36 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
     node_count.fetch_add(1, std::memory_order_relaxed);
 
     if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
+    if (ply > 0 && (pos.rule50_count() >= 100 || pos.is_repetition())) return 0;
+
+    int original_alpha = alpha;
+    uint16_t best_move = 0;
+
+    // TT Probe
+    TTEntry tte;
+    bool tt_hit = TTable.probe(pos.key(), tte);
+    if (tt_hit && tte.depth >= 0) {
+        int tt_score = score_from_tt(tte.score, ply);
+        if (tte.bound() == 1) return tt_score; // Exact
+        if (tte.bound() == 2) { // Upper
+            if (tt_score < beta) beta = tt_score;
+        } else if (tte.bound() == 3) { // Lower
+            if (tt_score > alpha) alpha = tt_score;
+        }
+        if (alpha >= beta) return alpha;
+    }
 
     bool in_check = pos.in_check();
     int stand_pat = -INFINITY_SCORE;
+    int static_eval = stand_pat;
 
     if (!in_check) {
         stand_pat = Eval::evaluate_light(pos);
-        if (stand_pat >= beta) return beta;
+        static_eval = stand_pat;
+        if (stand_pat >= beta) {
+            TTable.store(pos.key(), 0, score_to_tt(stand_pat, ply), static_eval, 0, 3);
+            return beta;
+        }
 
         // Delta Pruning
         const int DELTA = SearchParams::DELTA_MARGIN;
@@ -481,6 +504,7 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
 
         if (stand_pat > alpha) alpha = stand_pat;
     }
+    if (in_check) static_eval = Eval::evaluate(pos);
 
     // Syzygy TB Probe in QSearch? Usually only in main search.
     // But if we are in endgame, maybe?
@@ -512,13 +536,24 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
         pos.unmake_move(move);
         if (context->stop_flag) return 0;
 
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
+        if (score >= beta) {
+            TTable.store(pos.key(), move, score_to_tt(score, ply), static_eval, 0, 3);
+            return beta;
+        }
+        if (score > alpha) {
+            alpha = score;
+            best_move = move;
+        }
     }
 
     if (in_check && moves_searched == 0) {
-        return -MATE_SCORE + ply;
+        int mate_score = -MATE_SCORE + ply;
+        TTable.store(pos.key(), 0, score_to_tt(mate_score, ply), static_eval, 0, 1);
+        return mate_score;
     }
+
+    int bound = (alpha > original_alpha) ? 1 : 2; // 1=Exact, 2=Upper
+    TTable.store(pos.key(), best_move, score_to_tt(alpha, ply), static_eval, 0, bound);
     return alpha;
 }
 
