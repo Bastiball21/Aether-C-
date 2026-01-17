@@ -2,14 +2,38 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__linux__)
+#include <sys/mman.h>
+#endif
+
 TranspositionTable TTable;
 
 // Static assert to ensure packing
 static_assert(sizeof(TTEntry) == 16, "TTEntry must be 16 bytes");
 
+namespace {
+constexpr size_t kLargePageThresholdMb = 256;
+
+size_t large_page_size_bytes() {
+#if defined(_WIN32)
+    return static_cast<size_t>(GetLargePageMinimum());
+#elif defined(__linux__)
+    return 2ULL * 1024 * 1024;
+#else
+    return 0;
+#endif
+}
+} // namespace
+
 TranspositionTable::TranspositionTable(size_t size_mb) {
     current_gen = 0;
     resize(size_mb);
+}
+
+TranspositionTable::~TranspositionTable() {
+    release();
 }
 
 void TranspositionTable::resize(size_t size_mb) {
@@ -18,15 +42,85 @@ void TranspositionTable::resize(size_t size_mb) {
     size_t target_buckets = size_bytes / bucket_size;
 
     // Power of two
-    num_buckets = 1;
-    while (num_buckets * 2 <= target_buckets) num_buckets *= 2;
+    size_t desired_buckets = 1;
+    while (desired_buckets * 2 <= target_buckets) desired_buckets *= 2;
 
-    buckets.resize(num_buckets);
+    bool want_large_pages = use_large_pages && size_mb >= kLargePageThresholdMb;
+    size_t alloc_buckets = desired_buckets;
+
+    if (want_large_pages) {
+        size_t page_size = large_page_size_bytes();
+        if (page_size == 0) {
+            want_large_pages = false;
+        } else {
+            while (alloc_buckets > 1 && ((alloc_buckets * bucket_size) % page_size) != 0) {
+                alloc_buckets /= 2;
+            }
+        }
+    }
+
+    release();
+    num_buckets = alloc_buckets;
+    size_t alloc_bytes = num_buckets * bucket_size;
+
+    if (!(want_large_pages && alloc_bytes > 0 && allocate_large_pages(alloc_bytes))) {
+        allocate_standard(num_buckets);
+    }
+
     clear();
 }
 
+void TranspositionTable::set_large_pages(bool enabled) {
+    use_large_pages = enabled;
+}
+
+void TranspositionTable::release() {
+    if (using_large_pages && buckets != nullptr) {
+#if defined(_WIN32)
+        VirtualFree(buckets, 0, MEM_RELEASE);
+#elif defined(__linux__)
+        munmap(buckets, num_buckets * sizeof(TTBucket));
+#endif
+    }
+
+    buckets = nullptr;
+    using_large_pages = false;
+    fallback_buckets.clear();
+    fallback_buckets.shrink_to_fit();
+    num_buckets = 0;
+}
+
+bool TranspositionTable::allocate_large_pages(size_t bytes) {
+#if defined(_WIN32)
+    void* mem = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+    if (!mem) return false;
+    buckets = static_cast<TTBucket*>(mem);
+    using_large_pages = true;
+    return true;
+#elif defined(__linux__)
+    void* mem = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (mem == MAP_FAILED) return false;
+    buckets = static_cast<TTBucket*>(mem);
+    using_large_pages = true;
+    return true;
+#else
+    (void)bytes;
+    return false;
+#endif
+}
+
+void TranspositionTable::allocate_standard(size_t bucket_count) {
+    fallback_buckets.clear();
+    fallback_buckets.resize(bucket_count);
+    buckets = fallback_buckets.data();
+    using_large_pages = false;
+}
+
 void TranspositionTable::clear() {
-    std::memset(buckets.data(), 0, num_buckets * sizeof(TTBucket));
+    if (buckets && num_buckets > 0) {
+        std::memset(buckets, 0, num_buckets * sizeof(TTBucket));
+    }
     current_gen = 0;
 }
 

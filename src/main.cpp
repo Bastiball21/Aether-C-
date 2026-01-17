@@ -81,6 +81,7 @@ bool OptNullMove = true;
 bool OptProbCut = true;
 bool OptSingularExt = true;
 bool OptUseHistory = true;
+bool OptLargePages = false;
 
 void join_search() {
     Search::stop();
@@ -365,6 +366,8 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Failed to load weights from " << argv[i+1] << "\n";
             }
             i++;
+        } else if (arg == "--largepages") {
+            OptLargePages = true;
         }
     }
 
@@ -372,6 +375,7 @@ int main(int argc, char* argv[]) {
     pos.set_startpos();
 
     // Initialize TT with default
+    TTable.set_large_pages(OptLargePages);
     TTable.resize(OptHash);
 
     Eval::set_contempt(OptContempt);
@@ -396,6 +400,7 @@ int main(int argc, char* argv[]) {
             std::cout << "option name ProbCut type check default true\n";
             std::cout << "option name SingularExt type check default true\n";
             std::cout << "option name UseHistory type check default true\n";
+            std::cout << "option name LargePages type check default false\n";
             std::cout << "uciok\n" << std::flush;
         } else if (token == "isready") {
             std::cout << "readyok\n" << std::flush;
@@ -442,6 +447,11 @@ int main(int argc, char* argv[]) {
                         OptSingularExt = (value == "true");
                     } else if (name == "UseHistory") {
                         OptUseHistory = (value == "true");
+                    } else if (name == "LargePages") {
+                        OptLargePages = (value == "true");
+                        join_search();
+                        TTable.set_large_pages(OptLargePages);
+                        TTable.resize(OptHash);
                     }
                 }
             }

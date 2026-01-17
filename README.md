@@ -39,6 +39,10 @@ quit
 - `Threads`: Number of threads (currently only 1 supported).
 - `MoveOverhead`: Time buffer in milliseconds (default 10).
 - `UCI_Chess960`: Enable Chess960 mode (currently not fully implemented).
+- `LargePages`: Try to allocate the TT using large pages (requires OS support).
+
+You can also pass `--largepages` on the command line to enable large-page TT allocation
+before the UCI handshake.
 
 ## Debugging
 
