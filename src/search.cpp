@@ -347,7 +347,7 @@ void SearchWorker::start_search(const Position& pos, const SearchLimits& lm) {
         std::lock_guard<std::mutex> lk(mutex);
         root_pos = pos;
         limits = lm;
-        searching = true;
+        searching.store(true, std::memory_order_release);
     }
     if (thread_id != 0 && !worker_thread.joinable()) {
         worker_thread = std::thread(&SearchWorker::search_loop, this);
@@ -358,34 +358,35 @@ void SearchWorker::start_search(const Position& pos, const SearchLimits& lm) {
 
 void SearchWorker::wait_for_completion() {
     if (thread_id == 0) return;
-    while (searching) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    std::unique_lock<std::mutex> lk(mutex);
+    cv.wait(lk, [this] { return !searching.load(std::memory_order_acquire); });
 }
 
 void SearchWorker::stop() {}
 
 void SearchWorker::search_loop() {
     if (thread_id == 0) {
-        node_count = 0;
+        node_count.store(0, std::memory_order_relaxed);
         decay_history();
         iter_deep();
-        searching = false;
+        searching.store(false, std::memory_order_release);
+        cv.notify_all();
         return;
     }
     while (true) {
         std::unique_lock<std::mutex> lk(mutex);
-        cv.wait(lk, [this] { return searching || exit_thread; });
+        cv.wait(lk, [this] { return searching.load(std::memory_order_acquire) || exit_thread; });
         if (exit_thread) return;
 
-        node_count = 0;
+        node_count.store(0, std::memory_order_relaxed);
         decay_history();
         lk.unlock();
 
         iter_deep();
 
         lk.lock();
-        searching = false;
+        searching.store(false, std::memory_order_release);
+        cv.notify_all();
     }
 }
 
@@ -452,9 +453,9 @@ void SearchWorker::update_counter_move(int side, int prev_from, int prev_to, uin
 // ----------------------------------------------------------------------------
 
 int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
-    if ((node_count & 1023) == 0 && thread_id == 0) check_limits();
+    if ((node_count.load(std::memory_order_relaxed) & 1023) == 0 && thread_id == 0) check_limits();
     if (stop_flag) return 0;
-    node_count++;
+    node_count.fetch_add(1, std::memory_order_relaxed);
 
     if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
 
@@ -517,11 +518,11 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
 }
 
 int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move, uint16_t excluded_move) {
-    if ((node_count & 1023) == 0 && thread_id == 0) check_limits();
-    if (thread_id != 0 && (node_count & 1023) == 0 && stop_flag) return 0;
+    if ((node_count.load(std::memory_order_relaxed) & 1023) == 0 && thread_id == 0) check_limits();
+    if (thread_id != 0 && (node_count.load(std::memory_order_relaxed) & 1023) == 0 && stop_flag) return 0;
     if (stop_flag) return 0;
 
-    node_count++;
+    node_count.fetch_add(1, std::memory_order_relaxed);
     int original_alpha = alpha;
 
     // Mate Distance Pruning

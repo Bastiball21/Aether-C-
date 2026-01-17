@@ -23,7 +23,7 @@ public:
 
     void search_loop();
 
-    long long get_nodes() const { return node_count; }
+    long long get_nodes() const { return node_count.load(std::memory_order_relaxed); }
     int get_id() const { return thread_id; }
 
     // History Tables
@@ -53,13 +53,13 @@ public:
 
 private:
     int thread_id;
-    long long node_count;
+    std::atomic<long long> node_count;
 
     std::thread worker_thread;
     std::mutex mutex;
     std::condition_variable cv;
     bool exit_thread;
-    bool searching;
+    std::atomic<bool> searching;
 
     Position root_pos;
     SearchLimits limits;

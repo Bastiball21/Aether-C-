@@ -162,8 +162,8 @@ int main(int argc, char* argv[]) {
         if (!(ss >> token)) continue;
 
         if (token == "uci") {
-            std::cout << "id name Aether-C\n";
-            std::cout << "id author Bastiball21\n";
+            std::cout << "id name Aether-C Version 1.0.0\n";
+            std::cout << "id author Basti Dangca\n";
             std::cout << "option name Hash type spin default 64 min 1 max 65536\n";
             std::cout << "option name Threads type spin default 1 min 1 max 64\n";
             std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000\n";
