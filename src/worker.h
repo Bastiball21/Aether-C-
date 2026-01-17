@@ -42,12 +42,12 @@ public:
     friend class Search;
 
     // Search Functions
-    int quiescence(Position& pos, int alpha, int beta, int ply);
-    int negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move = 0, uint16_t excluded_move = 0);
+    int quiescence(SearchContext& context, Position& pos, int alpha, int beta, int ply);
+    int negamax(SearchContext& context, Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move = 0, uint16_t excluded_move = 0);
 
     // Root & Iterative Deepening
     void search_root(int depth, int alpha, int beta, std::vector<uint16_t>& root_moves, std::vector<int>& root_scores);
-    void iter_deep();
+    void iter_deep(SearchContext& context);
 
     void clear_history();
 
@@ -70,7 +70,7 @@ private:
     Position root_pos;
     SearchLimits limits;
 
-    void check_limits();
+    void check_limits(SearchContext& context);
     void decay_history();
 };
 
