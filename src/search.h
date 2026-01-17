@@ -41,6 +41,11 @@ struct SearchResult {
     int best_score_cp = 0;
     int depth_reached = 0;
     int pv_length = 0;
+    struct RootScore {
+        uint16_t move = 0;
+        int score = 0;
+    };
+    std::vector<RootScore> root_scores;
 };
 
 // History Tables Size

@@ -126,6 +126,26 @@ int main(int argc, char* argv[]) {
                 } else if (opt == "--depth" && i + 1 < argc) {
                     cfg.search_depth = std::stoi(argv[i + 1]);
                     i += 1;
+                } else if (opt == "--sample-top-n" && i + 1 < argc) {
+                    cfg.sample_top_n = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--sample-top-k" && i + 1 < argc) {
+                    cfg.sample_top_k = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--temp-start" && i + 1 < argc) {
+                    cfg.temp_start = std::stod(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--temp-end" && i + 1 < argc) {
+                    cfg.temp_end = std::stod(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--temp-plies" && i + 1 < argc) {
+                    cfg.temp_schedule_plies = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--epsilon" && i + 1 < argc) {
+                    cfg.epsilon = std::stod(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--epsilon-greedy") {
+                    cfg.use_epsilon_greedy = true;
                 } else if (opt == "--chess960") {
                     cfg.chess960 = true;
                 } else {

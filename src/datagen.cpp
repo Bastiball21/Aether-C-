@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <condition_variable>
 #include <cstddef>
@@ -113,6 +114,11 @@ struct Rng {
         z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
         z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
         return z ^ (z >> 31);
+    }
+
+    double uniform_01() {
+        constexpr double denom = 1.0 / static_cast<double>(UINT64_MAX);
+        return static_cast<double>(next_u64()) * denom;
     }
 };
 
@@ -223,45 +229,104 @@ bool is_legal_move(Position& pos, uint16_t move) {
     return legal;
 }
 
-void apply_random_opening(Position& pos, Rng& rng, int plies) {
-    if (plies <= 0) {
-        return;
+double temperature_for_ply(const DatagenConfig& config, int ply) {
+    if (config.temp_schedule_plies <= 0) {
+        return std::max(0.01, config.temp_start);
+    }
+    double t = static_cast<double>(std::min(ply, config.temp_schedule_plies));
+    double span = static_cast<double>(config.temp_schedule_plies);
+    double temp = config.temp_start + (config.temp_end - config.temp_start) * (t / span);
+    return std::max(0.01, temp);
+}
+
+uint16_t pick_random_opening_move(Position& pos, const MoveGen::MoveList& list, Rng& rng,
+    const std::unordered_set<Key>& seen_positions) {
+    std::vector<uint16_t> legal_moves;
+    std::vector<uint16_t> fresh_moves;
+    legal_moves.reserve(list.count);
+    fresh_moves.reserve(list.count);
+
+    for (int i = 0; i < list.count; ++i) {
+        uint16_t move = list.moves[i];
+        if (!is_legal_move(pos, move)) {
+            continue;
+        }
+        legal_moves.push_back(move);
+        pos.make_move(move);
+        if (seen_positions.find(pos.key()) == seen_positions.end()) {
+            fresh_moves.push_back(move);
+        }
+        pos.unmake_move(move);
     }
 
-    std::unordered_set<Key> seen;
-    seen.insert(pos.key());
+    const auto& pool = !fresh_moves.empty() ? fresh_moves : legal_moves;
+    if (pool.empty()) {
+        return 0;
+    }
+    size_t idx = rng.range(0, pool.size());
+    return pool[idx];
+}
 
-    for (int ply = 0; ply < plies; ++ply) {
-        MoveGen::MoveList list;
-        MoveGen::generate_all(pos, list);
-        if (list.count == 0) {
-            return;
-        }
+uint16_t pick_softmax_move(const std::vector<SearchResult::RootScore>& scores, Rng& rng,
+    int ply, const DatagenConfig& config) {
+    if (scores.empty()) {
+        return 0;
+    }
 
-        bool moved = false;
-        int attempts = list.count;
-        while (attempts-- > 0 && list.count > 0) {
-            int idx = static_cast<int>(rng.range(0, static_cast<size_t>(list.count)));
-            uint16_t move = list.moves[idx];
-            list.moves[idx] = list.moves[list.count - 1];
-            list.count -= 1;
+    size_t top_n = std::min(scores.size(), static_cast<size_t>(std::max(1, config.sample_top_n)));
+    int max_score = scores[0].score;
+    double temp = temperature_for_ply(config, ply);
 
-            if (!is_legal_move(pos, move)) {
-                continue;
-            }
+    std::vector<double> weights;
+    weights.reserve(top_n);
+    double total = 0.0;
+    for (size_t i = 0; i < top_n; ++i) {
+        double w = std::exp((scores[i].score - max_score) / temp);
+        weights.push_back(w);
+        total += w;
+    }
+    if (total <= 0.0) {
+        return scores[0].move;
+    }
 
-            pos.make_move(move);
-            if (seen.insert(pos.key()).second) {
-                moved = true;
-                break;
-            }
-            pos.unmake_move(move);
-        }
-
-        if (!moved) {
-            return;
+    double r = rng.uniform_01() * total;
+    double acc = 0.0;
+    for (size_t i = 0; i < top_n; ++i) {
+        acc += weights[i];
+        if (r <= acc) {
+            return scores[i].move;
         }
     }
+    return scores[0].move;
+}
+
+uint16_t pick_epsilon_greedy_move(const std::vector<SearchResult::RootScore>& scores, Rng& rng,
+    const DatagenConfig& config) {
+    if (scores.empty()) {
+        return 0;
+    }
+
+    size_t top_k = std::min(scores.size(), static_cast<size_t>(std::max(1, config.sample_top_k)));
+    if (top_k <= 1 || config.epsilon <= 0.0) {
+        return scores[0].move;
+    }
+
+    if (rng.uniform_01() < config.epsilon) {
+        size_t idx = rng.range(0, top_k);
+        return scores[idx].move;
+    }
+    return scores[0].move;
+}
+
+uint16_t pick_policy_move(const SearchResult& result, Rng& rng, int ply,
+    const DatagenConfig& config) {
+    if (!result.root_scores.empty()) {
+        if (config.use_epsilon_greedy) {
+            return pick_epsilon_greedy_move(result.root_scores, rng, config);
+        }
+        return pick_softmax_move(result.root_scores, rng, ply, config);
+    }
+    return result.best_move;
 }
 
 void writer_thread(std::ofstream& out, std::mutex& out_mutex, std::condition_variable& cv,
@@ -430,11 +495,14 @@ void run_datagen(const DatagenConfig& config) {
                 } else {
                     pos.set_startpos();
                 }
-                apply_random_opening(pos, rng, config.opening_random_plies);
 
                 uint64_t rolling_hash = rng.splitmix(config.seed ^ pos.key());
                 std::vector<DatagenRecord> records;
                 records.reserve(256);
+                std::unordered_map<Key, int> repetition_counts;
+                repetition_counts[pos.key()] = 1;
+                std::unordered_set<Key> seen_positions;
+                seen_positions.insert(pos.key());
 
                 int ply = 0;
                 int mercy_counter = 0;
@@ -447,7 +515,7 @@ void run_datagen(const DatagenConfig& config) {
                 bool finished = false;
 
                 while (!finished && ply < MAX_PLIES) {
-                    if (pos.rule50_count() >= 100 || pos.is_repetition()) {
+                    if (pos.rule50_count() >= 100 || repetition_counts[pos.key()] >= 3) {
                         result = 0.5f;
                         break;
                     }
@@ -574,13 +642,24 @@ void run_datagen(const DatagenConfig& config) {
                         records.push_back({packed});
                     }
 
-                    uint16_t move = search_result.best_move;
+                    uint16_t move = 0;
+                    if (ply < config.opening_random_plies) {
+                        move = pick_random_opening_move(pos, list, rng, seen_positions);
+                    } else {
+                        move = pick_policy_move(search_result, rng, ply, config);
+                    }
+
+                    if (move == 0) {
+                        move = search_result.best_move;
+                    }
                     if (move == 0) {
                         break;
                     }
 
                     rolling_hash = rng.splitmix(rolling_hash ^ pos.key() ^ move);
                     pos.make_move(move);
+                    seen_positions.insert(pos.key());
+                    repetition_counts[pos.key()] += 1;
 
                     ply += 1;
                 }
