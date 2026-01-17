@@ -31,6 +31,7 @@ struct DatagenConfig {
     int balance_moderate_keep = 50;
     int balance_extreme_keep = 25;
     size_t record_lru_size = 8192;
+    size_t writer_lru_size = 0;
     PackedFormat output_format = PackedFormat::V2;
     bool adjudicate = true;
 };

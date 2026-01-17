@@ -305,6 +305,9 @@ int main(int argc, char* argv[]) {
                 } else if (opt == "--balance-extreme-keep" && j + 1 < argc) {
                     cfg.balance_extreme_keep = std::stoi(argv[j + 1]);
                     j += 1;
+                } else if (opt == "--writer-lru-size" && j + 1 < argc) {
+                    cfg.writer_lru_size = static_cast<size_t>(std::stoull(argv[j + 1]));
+                    j += 1;
                 } else {
                     std::cerr << "unknown datagen option: " << opt << "\n";
                     return 1;
