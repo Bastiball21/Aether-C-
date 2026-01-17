@@ -4,6 +4,7 @@
 #include "eval/eval.h"
 #include "movegen.h"
 #include "position.h"
+#include "search.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -41,6 +42,7 @@ constexpr int MATE_CAP = 3000;
 constexpr int MATE_SCORE = 31000;
 
 std::atomic<bool> stop_flag(false);
+std::mutex search_mutex;
 
 std::string trim_copy(const std::string& input) {
     const auto start = input.find_first_not_of(" \t\r\n");
@@ -217,99 +219,6 @@ bool is_legal_move(Position& pos, uint16_t move) {
     }
     pos.unmake_move(move);
     return legal;
-}
-
-int negamax(Position& pos, int depth, int alpha, int beta, int64_t node_limit,
-    int64_t& nodes, bool& stop) {
-    if (stop) {
-        return Eval::evaluate(pos);
-    }
-    if (node_limit > 0 && nodes >= node_limit) {
-        stop = true;
-        return Eval::evaluate(pos);
-    }
-    if (depth <= 0) {
-        nodes += 1;
-        return Eval::evaluate(pos);
-    }
-
-    MoveGen::MoveList list;
-    MoveGen::generate_all(pos, list);
-
-    int best = -MATE_SCORE;
-    bool has_move = false;
-    for (int i = 0; i < list.count; ++i) {
-        uint16_t move = list.moves[i];
-        if (!is_legal_move(pos, move)) {
-            continue;
-        }
-        has_move = true;
-        pos.make_move(move);
-        int score = -negamax(pos, depth - 1, -beta, -alpha, node_limit, nodes, stop);
-        pos.unmake_move(move);
-
-        if (score > best) {
-            best = score;
-        }
-        if (score > alpha) {
-            alpha = score;
-        }
-        if (alpha >= beta || stop) {
-            break;
-        }
-    }
-
-    if (!has_move) {
-        if (pos.in_check()) {
-            return -MATE_SCORE;
-        }
-        return 0;
-    }
-
-    return best;
-}
-
-uint16_t search_best_move(Position& pos, Rng& rng, int depth, int64_t node_limit,
-    int64_t& nodes_used, int& best_score_out) {
-    MoveGen::MoveList list;
-    MoveGen::generate_all(pos, list);
-
-    std::vector<uint16_t> candidates;
-    int best_score = -MATE_SCORE;
-    int64_t local_nodes = 0;
-    bool stop = false;
-
-    for (int i = 0; i < list.count; ++i) {
-        uint16_t move = list.moves[i];
-        if (!is_legal_move(pos, move)) {
-            continue;
-        }
-        pos.make_move(move);
-        int score = -negamax(pos, depth - 1, -MATE_SCORE, MATE_SCORE, node_limit, local_nodes, stop);
-        pos.unmake_move(move);
-
-        if (score > best_score) {
-            best_score = score;
-            candidates.clear();
-            candidates.push_back(move);
-        } else if (score == best_score) {
-            candidates.push_back(move);
-        }
-
-        if (stop) {
-            break;
-        }
-    }
-
-    nodes_used += local_nodes;
-    if (candidates.empty()) {
-        best_score_out = -MATE_SCORE;
-        return 0;
-    }
-
-    size_t idx = rng.range(0, candidates.size());
-    best_score_out = best_score;
-    return candidates[idx];
 }
 
 void apply_random_opening(Position& pos, Rng& rng, int plies) {
@@ -562,7 +471,20 @@ void run_datagen(const DatagenConfig& config) {
                         break;
                     }
 
-                    int eval_stm = Eval::evaluate(pos);
+                    SearchLimits limits;
+                    limits.depth = std::max(1, config.search_depth);
+                    limits.nodes = config.search_nodes;
+                    limits.silent = true;
+                    limits.seed = rng.next_u64();
+
+                    SearchResult search_result;
+                    {
+                        std::lock_guard<std::mutex> lock(search_mutex);
+                        search_result = Search::search(pos, limits);
+                        nodes_total.fetch_add(static_cast<long>(Search::get_node_count()));
+                    }
+
+                    int eval_stm = search_result.best_score_cp;
                     int16_t clamped = clamp_score(eval_stm);
 
                     if (std::abs(clamped) >= MERCY_CP) {
@@ -617,16 +539,7 @@ void run_datagen(const DatagenConfig& config) {
                         records.push_back({packed});
                     }
 
-                    int best_score = 0;
-                    int64_t nodes_used = 0;
-                    uint16_t move = search_best_move(
-                        pos,
-                        rng,
-                        std::max(1, config.search_depth),
-                        config.search_nodes,
-                        nodes_used,
-                        best_score);
-                    nodes_total.fetch_add(static_cast<long>(nodes_used));
+                    uint16_t move = search_result.best_move;
                     if (move == 0) {
                         break;
                     }

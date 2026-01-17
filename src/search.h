@@ -17,6 +17,8 @@ struct SearchLimits {
     int64_t nodes = 0;
     int move_time = 0;
     bool infinite = false;
+    bool silent = false;
+    uint64_t seed = 0;
 
     // Time management fields
     int time[2] = {0, 0}; // wtime, btime
@@ -34,12 +36,20 @@ struct SearchLimits {
     bool use_history = true;
 };
 
+struct SearchResult {
+    uint16_t best_move = 0;
+    int best_score_cp = 0;
+    int depth_reached = 0;
+    int pv_length = 0;
+};
+
 // History Tables Size
 const int MAX_PLY = 256;
 
 class Search {
 public:
     static void start(Position& pos, const SearchLimits& limits);
+    static SearchResult search(Position& pos, const SearchLimits& limits);
     static void stop();
     static void clear();
 

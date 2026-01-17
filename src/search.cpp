@@ -328,7 +328,8 @@ public:
 // SearchWorker Implementation
 // ----------------------------------------------------------------------------
 
-SearchWorker::SearchWorker(int id) : thread_id(id), node_count(0), exit_thread(false), searching(false) {
+SearchWorker::SearchWorker(int id) : thread_id(id), node_count(0), exit_thread(false), searching(false),
+    best_move(0), best_score(0), depth_reached(0), pv_length(0) {
     clear_history();
 }
 
@@ -792,6 +793,17 @@ std::string get_pv(Position& pos, uint16_t root_move) {
     return res;
 }
 
+int pv_length_from_move(Position& pos, uint16_t root_move) {
+    if (root_move == 0) {
+        return 0;
+    }
+    std::string pv = get_pv(pos, root_move);
+    if (pv.empty()) {
+        return 0;
+    }
+    return 1 + static_cast<int>(std::count(pv.begin(), pv.end(), ' '));
+}
+
 struct RootMove {
     uint16_t move;
     int score;
@@ -800,6 +812,12 @@ struct RootMove {
 
 void SearchWorker::iter_deep() {
     Position& pos = root_pos;
+    if (thread_id == 0) {
+        this->best_move = 0;
+        best_score = 0;
+        depth_reached = 0;
+        pv_length = 0;
+    }
 
     // Syzygy Root Probe (Master Only)
     if (thread_id == 0 && Syzygy::enabled()) {
@@ -813,8 +831,15 @@ void SearchWorker::iter_deep() {
                  score_str = "mate " + std::to_string(tb_score > 0 ? mate : -mate);
              }
 
-             std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << get_pv(pos, tb_move) << std::endl;
-             std::cout << "bestmove " << move_to_uci(tb_move) << std::endl;
+             this->best_move = tb_move;
+             best_score = tb_score;
+             depth_reached = 1;
+             pv_length = pv_length_from_move(pos, tb_move);
+
+             if (!limits.silent) {
+                 std::cout << "info depth 1 score " << score_str << " nodes 0 time 0 pv " << get_pv(pos, tb_move) << std::endl;
+                 std::cout << "bestmove " << move_to_uci(tb_move) << std::endl;
+             }
              return;
         }
     }
@@ -936,14 +961,23 @@ void SearchWorker::iter_deep() {
                  score_str = "mate " + std::to_string(best_val > 0 ? mate : -mate);
              }
 
-             std::cout << "info depth " << depth << " score " << score_str
-                       << " time " << ms << " nodes " << GlobalPool.get_total_nodes()
-                       << " nps " << nps << " pv " << get_pv(pos, best_move) << std::endl;
+             this->best_move = best_move;
+             best_score = best_val;
+             depth_reached = depth;
+             pv_length = pv_length_from_move(pos, best_move);
+
+             if (!limits.silent) {
+                 std::cout << "info depth " << depth << " score " << score_str
+                           << " time " << ms << " nodes " << GlobalPool.get_total_nodes()
+                           << " nps " << nps << " pv " << get_pv(pos, best_move) << std::endl;
+             }
         }
     }
 
     if (thread_id == 0) {
-        std::cout << "bestmove " << move_to_uci(best_move) << std::endl;
+        if (!limits.silent) {
+            std::cout << "bestmove " << move_to_uci(best_move) << std::endl;
+        }
     }
 }
 
@@ -991,6 +1025,10 @@ ThreadPool::~ThreadPool() {
 // ----------------------------------------------------------------------------
 
 void Search::start(Position& pos, const SearchLimits& limits) {
+    Search::search(pos, limits);
+}
+
+SearchResult Search::search(Position& pos, const SearchLimits& limits) {
     static bool init = false;
     if (!init) { init_lmr(); init = true; }
 
@@ -1029,6 +1067,15 @@ void Search::start(Position& pos, const SearchLimits& limits) {
 
     stop_flag = true;
     GlobalPool.wait_for_completion();
+
+    SearchResult result;
+    if (GlobalPool.master) {
+        result.best_move = GlobalPool.master->best_move;
+        result.best_score_cp = GlobalPool.master->best_score;
+        result.depth_reached = GlobalPool.master->depth_reached;
+        result.pv_length = GlobalPool.master->pv_length;
+    }
+    return result;
 }
 
 void Search::stop() { stop_flag = true; }
