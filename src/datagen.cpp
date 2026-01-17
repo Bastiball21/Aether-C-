@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <list>
 #include <mutex>
 #include <queue>
 #include <random>
@@ -120,6 +121,41 @@ struct Rng {
         constexpr double denom = 1.0 / static_cast<double>(UINT64_MAX);
         return static_cast<double>(next_u64()) * denom;
     }
+};
+
+class LruKeySet {
+public:
+    explicit LruKeySet(size_t capacity) : capacity_(capacity) {}
+
+    bool contains(Key key) const {
+        return lookup_.find(key) != lookup_.end();
+    }
+
+    void insert(Key key) {
+        auto it = lookup_.find(key);
+        if (it != lookup_.end()) {
+            order_.splice(order_.begin(), order_, it->second);
+            return;
+        }
+        order_.push_front(key);
+        lookup_[key] = order_.begin();
+        if (capacity_ == 0) {
+            lookup_.erase(key);
+            order_.clear();
+            return;
+        }
+        if (lookup_.size() > capacity_) {
+            auto last = order_.end();
+            --last;
+            lookup_.erase(*last);
+            order_.pop_back();
+        }
+    }
+
+private:
+    size_t capacity_;
+    std::list<Key> order_;
+    std::unordered_map<Key, std::list<Key>::iterator> lookup_;
 };
 
 struct DatagenRecord {
@@ -503,6 +539,7 @@ void run_datagen(const DatagenConfig& config) {
                 repetition_counts[pos.key()] = 1;
                 std::unordered_set<Key> seen_positions;
                 seen_positions.insert(pos.key());
+                LruKeySet recent_positions(config.record_lru_size);
 
                 int ply = 0;
                 int mercy_counter = 0;
@@ -513,6 +550,7 @@ void run_datagen(const DatagenConfig& config) {
                 bool has_last_eval = false;
                 float result = 0.5f;
                 bool finished = false;
+                bool last_move_interesting = false;
 
                 while (!finished && ply < MAX_PLIES) {
                     if (pos.rule50_count() >= 100 || repetition_counts[pos.key()] >= 3) {
@@ -562,6 +600,7 @@ void run_datagen(const DatagenConfig& config) {
                         search_result = Search::search(pos, limits);
                         nodes_total.fetch_add(static_cast<long>(Search::get_node_count()));
                     }
+                    int64_t search_nodes = Search::get_node_count();
 
                     int eval_stm = search_result.best_score_cp;
                     int clamped_eval = EvalUtil::clamp_score_cp(
@@ -624,19 +663,32 @@ void run_datagen(const DatagenConfig& config) {
                         draw_counter = 0;
                     }
 
+                    bool depth_or_nodes_ok = true;
+                    if (config.min_depth > 0 || config.min_nodes > 0) {
+                        depth_or_nodes_ok = (search_result.depth_reached >= config.min_depth)
+                            || (search_nodes >= config.min_nodes);
+                    }
+
+                    bool pv_ok = search_result.pv_length > 0;
                     bool should_keep = false;
                     if (ply >= OPENING_SKIP_PLIES) {
-                        int abs_score = std::abs(clamped);
-                        if (abs_score <= 200) {
-                            should_keep = true;
-                        } else if (abs_score <= 600) {
-                            should_keep = rng.range(0, 100) < 50;
-                        } else {
-                            should_keep = rng.range(0, 100) < 25;
+                        bool record_due_to_ply = config.record_every <= 1
+                            || (ply % config.record_every == 0);
+                        if (record_due_to_ply || last_move_interesting) {
+                            int abs_score = std::abs(clamped);
+                            if (abs_score <= config.balance_equal_cp) {
+                                should_keep = rng.range(0, 100) < config.balance_equal_keep;
+                            } else if (abs_score <= config.balance_moderate_cp) {
+                                should_keep = rng.range(0, 100) < config.balance_moderate_keep;
+                            } else {
+                                should_keep = rng.range(0, 100) < config.balance_extreme_keep;
+                            }
                         }
                     }
 
-                    if (should_keep) {
+                    if (should_keep && depth_or_nodes_ok && pv_ok
+                        && !recent_positions.contains(pos.key())) {
+                        recent_positions.insert(pos.key());
                         PackedBoard packed{};
                         pack_position(pos, clamped, wdl, 0.5f, packed);
                         records.push_back({packed});
@@ -656,8 +708,15 @@ void run_datagen(const DatagenConfig& config) {
                         break;
                     }
 
+                    Square move_from = static_cast<Square>((move >> 6) & 0x3F);
+                    int move_flag = move >> 12;
+                    bool is_capture = (move_flag & 4) || (move_flag == 5);
+                    bool is_pawn_push = pos.piece_on(move_from) % 6 == PAWN;
+
                     rolling_hash = rng.splitmix(rolling_hash ^ pos.key() ^ move);
                     pos.make_move(move);
+                    bool gives_check = pos.in_check();
+                    last_move_interesting = is_capture || is_pawn_push || gives_check;
                     seen_positions.insert(pos.key());
                     repetition_counts[pos.key()] += 1;
 
