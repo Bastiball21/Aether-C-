@@ -14,7 +14,7 @@ class MovePicker;
 // Per-thread search state
 class SearchWorker {
 public:
-    SearchWorker(int id);
+    SearchWorker(int id, SearchContext& context);
     ~SearchWorker();
 
     void start_search(const Position& root_pos, const SearchLimits& limits);
@@ -53,6 +53,7 @@ public:
 
 private:
     int thread_id;
+    SearchContext* context;
     std::atomic<long long> node_count;
     uint16_t best_move;
     int best_score;
@@ -79,14 +80,14 @@ public:
     void start_search(const Position& pos, const SearchLimits& limits);
     void wait_for_completion();
     long long get_total_nodes() const;
+    void set_context(SearchContext* ctx) { context = ctx; }
 
     std::vector<SearchWorker*> workers;
     SearchWorker* master;
+    SearchContext* context;
 
-    ThreadPool() : master(nullptr) {}
+    ThreadPool() : master(nullptr), context(nullptr) {}
     ~ThreadPool();
 };
-
-extern ThreadPool GlobalPool;
 
 #endif // WORKER_H

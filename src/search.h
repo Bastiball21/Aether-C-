@@ -3,8 +3,10 @@
 
 #include "position.h"
 #include <atomic>
-#include <vector>
+#include <chrono>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 // Forward declarations
 struct Move;
@@ -48,6 +50,21 @@ struct SearchResult {
     std::vector<RootScore> root_scores;
 };
 
+class ThreadPool;
+
+struct SearchContext {
+    std::atomic<bool> stop_flag{false};
+    int64_t allocated_time_limit = 0;
+    int64_t nodes_limit_count = 0;
+    std::chrono::steady_clock::time_point start_time;
+    std::unique_ptr<ThreadPool> pool;
+
+    SearchContext();
+    ~SearchContext();
+
+    long long get_node_count() const;
+};
+
 // History Tables Size
 const int MAX_PLY = 256;
 
@@ -55,16 +72,11 @@ class Search {
 public:
     static void start(Position& pos, const SearchLimits& limits);
     static SearchResult search(Position& pos, const SearchLimits& limits);
+    static SearchResult search(Position& pos, const SearchLimits& limits, SearchContext& context);
     static void stop();
     static void clear();
 
     static long long get_node_count();
-
-    // Options
-    static bool UseNMP;
-    static bool UseProbCut;
-    static bool UseSingular;
-    static bool UseHistory;
 };
 
 #endif // SEARCH_H
