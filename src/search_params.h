@@ -26,6 +26,8 @@ namespace SearchParams {
     // History
     constexpr int HISTORY_MAX = 16384;
     constexpr int HISTORY_DECAY = 16; // 1/16
+    constexpr int HISTORY_PRUNE_DEPTH = 3;
+    constexpr int HISTORY_PRUNE_THRESHOLD = -800;
 
     // See
     constexpr int SEE_GOOD_CAPTURE = 0;
