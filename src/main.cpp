@@ -148,6 +148,30 @@ int main(int argc, char* argv[]) {
                     cfg.use_epsilon_greedy = true;
                 } else if (opt == "--chess960") {
                     cfg.chess960 = true;
+                } else if (opt == "--min-depth" && i + 1 < argc) {
+                    cfg.min_depth = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--min-nodes" && i + 1 < argc) {
+                    cfg.min_nodes = std::stoll(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--record-every" && i + 1 < argc) {
+                    cfg.record_every = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--balance-equal-cp" && i + 1 < argc) {
+                    cfg.balance_equal_cp = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--balance-moderate-cp" && i + 1 < argc) {
+                    cfg.balance_moderate_cp = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--balance-equal-keep" && i + 1 < argc) {
+                    cfg.balance_equal_keep = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--balance-moderate-keep" && i + 1 < argc) {
+                    cfg.balance_moderate_keep = std::stoi(argv[i + 1]);
+                    i += 1;
+                } else if (opt == "--balance-extreme-keep" && i + 1 < argc) {
+                    cfg.balance_extreme_keep = std::stoi(argv[i + 1]);
+                    i += 1;
                 } else {
                     break;
                 }
