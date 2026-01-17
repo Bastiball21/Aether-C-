@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 // Forward declarations
@@ -53,18 +54,25 @@ struct SearchResult {
 class ThreadPool;
 
 struct SearchContext {
+    SearchLimits options;
     std::atomic<bool> stop_flag{false};
     int64_t soft_time_limit = 0;
     int64_t hard_time_limit = 0;
     int64_t nodes_limit_count = 0;
     std::atomic<bool> unstable_iteration{false};
     std::chrono::steady_clock::time_point start_time;
+    int lmr_table[64][64]{};
+    std::once_flag lmr_once;
     std::unique_ptr<ThreadPool> pool;
 
     SearchContext();
     ~SearchContext();
 
     long long get_node_count() const;
+    void init_lmr();
+
+    static std::atomic<SearchContext*> active_context;
+    static SearchContext default_context;
 };
 
 // History Tables Size

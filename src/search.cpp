@@ -19,25 +19,12 @@ using namespace std::chrono;
 // Globals & Constants
 // ----------------------------------------------------------------------------
 
-// LMR Table
-int LMRTable[64][64];
-std::once_flag lmr_once;
-
-void init_lmr() {
-    for (int d = 0; d < 64; d++) {
-        for (int m = 0; m < 64; m++) {
-            if (d < 3 || m < 2) LMRTable[d][m] = 0;
-            else {
-                // Tuned LMR formula
-                LMRTable[d][m] = (int)(SearchParams::LMR_BASE + log(d) * log(m) / SearchParams::LMR_DIVISOR);
-            }
-        }
-    }
-}
-
 const int INFINITY_SCORE = 32000;
 const int MATE_SCORE = 31000;
 const int MAX_HISTORY = SearchParams::HISTORY_MAX;
+
+std::atomic<SearchContext*> SearchContext::active_context(nullptr);
+SearchContext SearchContext::default_context;
 
 SearchContext::SearchContext() : pool(std::make_unique<ThreadPool>()) {
     pool->set_context(this);
@@ -47,6 +34,18 @@ SearchContext::~SearchContext() = default;
 
 long long SearchContext::get_node_count() const {
     return pool ? pool->get_total_nodes() : 0;
+}
+
+void SearchContext::init_lmr() {
+    for (int d = 0; d < 64; d++) {
+        for (int m = 0; m < 64; m++) {
+            if (d < 3 || m < 2) lmr_table[d][m] = 0;
+            else {
+                // Tuned LMR formula
+                lmr_table[d][m] = (int)(SearchParams::LMR_BASE + log(d) * log(m) / SearchParams::LMR_DIVISOR);
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -372,7 +371,7 @@ void SearchWorker::search_loop() {
     if (thread_id == 0) {
         node_count.store(0, std::memory_order_relaxed);
         decay_history();
-        iter_deep();
+        iter_deep(*context);
         searching.store(false, std::memory_order_release);
         cv.notify_all();
         return;
@@ -386,7 +385,7 @@ void SearchWorker::search_loop() {
         decay_history();
         lk.unlock();
 
-        iter_deep();
+        iter_deep(*context);
 
         lk.lock();
         searching.store(false, std::memory_order_release);
@@ -394,23 +393,23 @@ void SearchWorker::search_loop() {
     }
 }
 
-void SearchWorker::check_limits() {
-    if (context->stop_flag) return;
-    if (context->nodes_limit_count > 0
-        && context->pool->get_total_nodes() >= context->nodes_limit_count) {
-        context->stop_flag = true;
+void SearchWorker::check_limits(SearchContext& search_context) {
+    if (search_context.stop_flag) return;
+    if (search_context.nodes_limit_count > 0
+        && search_context.pool->get_total_nodes() >= search_context.nodes_limit_count) {
+        search_context.stop_flag = true;
         return;
     }
-    if (context->hard_time_limit > 0 || context->soft_time_limit > 0) {
+    if (search_context.hard_time_limit > 0 || search_context.soft_time_limit > 0) {
         auto now = steady_clock::now();
-        long long ms = duration_cast<milliseconds>(now - context->start_time).count();
-        if (context->hard_time_limit > 0 && ms >= context->hard_time_limit) {
-            context->stop_flag = true;
+        long long ms = duration_cast<milliseconds>(now - search_context.start_time).count();
+        if (search_context.hard_time_limit > 0 && ms >= search_context.hard_time_limit) {
+            search_context.stop_flag = true;
             return;
         }
-        if (context->soft_time_limit > 0 && ms >= context->soft_time_limit) {
-            if (!context->unstable_iteration.load(std::memory_order_relaxed)) {
-                context->stop_flag = true;
+        if (search_context.soft_time_limit > 0 && ms >= search_context.soft_time_limit) {
+            if (!search_context.unstable_iteration.load(std::memory_order_relaxed)) {
+                search_context.stop_flag = true;
             }
         }
     }
@@ -463,9 +462,9 @@ void SearchWorker::update_counter_move(int side, int prev_from, int prev_to, uin
 // Search Algorithms
 // ----------------------------------------------------------------------------
 
-int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
-    if ((node_count.load(std::memory_order_relaxed) & 1023) == 0 && thread_id == 0) check_limits();
-    if (context->stop_flag) return 0;
+int SearchWorker::quiescence(SearchContext& search_context, Position& pos, int alpha, int beta, int ply) {
+    if ((node_count.load(std::memory_order_relaxed) & 1023) == 0 && thread_id == 0) check_limits(search_context);
+    if (search_context.stop_flag) return 0;
     node_count.fetch_add(1, std::memory_order_relaxed);
 
     if (ply >= MAX_PLY - 1) return Eval::evaluate(pos);
@@ -538,9 +537,9 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
         }
         moves_searched++;
         TTable.prefetch(pos.key());
-        int score = -quiescence(pos, -beta, -alpha, ply + 1);
+        int score = -quiescence(search_context, pos, -beta, -alpha, ply + 1);
         pos.unmake_move(move);
-        if (context->stop_flag) return 0;
+        if (search_context.stop_flag) return 0;
 
         if (score >= beta) {
             TTable.store(pos.key(), move, score_to_tt(score, ply), static_eval, 0, 3);
@@ -563,12 +562,12 @@ int SearchWorker::quiescence(Position& pos, int alpha, int beta, int ply) {
     return alpha;
 }
 
-int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move, uint16_t excluded_move) {
-    if ((node_count.load(std::memory_order_relaxed) & 1023) == 0 && thread_id == 0) check_limits();
-    if (thread_id != 0 && (node_count.load(std::memory_order_relaxed) & 1023) == 0 && context->stop_flag) {
+int SearchWorker::negamax(SearchContext& search_context, Position& pos, int depth, int alpha, int beta, int ply, bool null_allowed, uint16_t prev_move, uint16_t excluded_move) {
+    if ((node_count.load(std::memory_order_relaxed) & 1023) == 0 && thread_id == 0) check_limits(search_context);
+    if (thread_id != 0 && (node_count.load(std::memory_order_relaxed) & 1023) == 0 && search_context.stop_flag) {
         return 0;
     }
-    if (context->stop_flag) return 0;
+    if (search_context.stop_flag) return 0;
 
     node_count.fetch_add(1, std::memory_order_relaxed);
     int original_alpha = alpha;
@@ -589,7 +588,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
     // Check Extension
     if (in_check) depth++;
 
-    if (depth <= 0) return quiescence(pos, alpha, beta, ply);
+    if (depth <= 0) return quiescence(search_context, pos, alpha, beta, ply);
 
     // Syzygy Probing
     if (Syzygy::enabled() && !excluded_move) {
@@ -630,7 +629,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
     // IID (Internal Iterative Deepening)
     if (depth >= 5 && tt_move == 0 && is_pv) {
         // Reduced depth search to find a move
-        negamax(pos, depth - 2, alpha, beta, ply, false, prev_move, 0);
+        negamax(search_context, pos, depth - 2, alpha, beta, ply, false, prev_move, 0);
         if (TTable.probe(pos.key(), tte)) {
             tt_move = tte.move;
             tt_hit = true;
@@ -646,7 +645,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         int tt_score = score_from_tt(tte.score, ply);
         int margin = SearchParams::SINGULAR_MARGIN * depth;
         int singular_beta = tt_score - margin;
-        int score = negamax(pos, (depth - 1) / 2, singular_beta - 1, singular_beta, ply, false, prev_move, tt_move);
+        int score = negamax(search_context, pos, (depth - 1) / 2, singular_beta - 1, singular_beta, ply, false, prev_move, tt_move);
         if (score < singular_beta) {
              singular_ext = 1;
         }
@@ -661,13 +660,13 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
         if (limits.use_nmp && null_allowed && depth >= SearchParams::NMP_DEPTH_LIMIT && static_eval >= beta && pos.non_pawn_material(pos.side_to_move()) >= 300) {
             int R = SearchParams::NMP_BASE_REDUCTION + depth / SearchParams::NMP_DIVISOR;
             pos.make_null_move();
-            int score = -negamax(pos, depth - R, -beta, -beta + 1, ply + 1, false, 0, 0);
+            int score = -negamax(search_context, pos, depth - R, -beta, -beta + 1, ply + 1, false, 0, 0);
             pos.unmake_null_move();
-            if (context->stop_flag) return 0;
+            if (search_context.stop_flag) return 0;
             if (score >= beta) {
                 // Modified: Verification search for deep null moves
                 if (depth >= 12 && score < MATE_SCORE - MAX_PLY) {
-                    score = -negamax(pos, depth - R, -beta, -beta + 1, ply, false, prev_move, 0);
+                    score = -negamax(search_context, pos, depth - R, -beta, -beta + 1, ply, false, prev_move, 0);
                     if (score < beta) goto skip_nmp;
                 }
                 return beta;
@@ -678,7 +677,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
 
         // Razoring (depth <= 2)
         if (depth <= 2 && static_eval + SearchParams::RAZORING_MARGIN < alpha) {
-             int qscore = quiescence(pos, alpha, beta, ply);
+             int qscore = quiescence(search_context, pos, alpha, beta, ply);
              if (qscore < alpha) return alpha;
         }
 
@@ -750,7 +749,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
 
         int score;
         if (moves_searched == 1) {
-            score = -negamax(pos, depth - 1 + singular_ext, -beta, -alpha, ply + 1, true, move, 0);
+            score = -negamax(search_context, pos, depth - 1 + singular_ext, -beta, -alpha, ply + 1, true, move, 0);
         } else {
             // LMR
             int reduction = 0;
@@ -758,7 +757,7 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
             if (depth >= 3 && moves_searched > 1 && !in_check && is_quiet && !gives_check) {
                 int d = std::min(depth, 63);
                 int m = std::min(moves_searched, 63);
-                reduction = LMRTable[d][m];
+                reduction = search_context.lmr_table[d][m];
                 if (is_killer) reduction -= 1;
                 if (!is_pv) reduction += 1;
                 if (history_norm > 0.75) reduction -= 1;
@@ -767,18 +766,18 @@ int SearchWorker::negamax(Position& pos, int depth, int alpha, int beta, int ply
                 reduction = std::clamp(reduction, 0, max_reduction);
             }
 
-            score = -negamax(pos, depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, true, move, 0);
+            score = -negamax(search_context, pos, depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, true, move, 0);
 
             if (score > alpha && reduction > 0) {
-                 score = -negamax(pos, depth - 1 + singular_ext, -alpha - 1, -alpha, ply + 1, true, move, 0);
+                 score = -negamax(search_context, pos, depth - 1 + singular_ext, -alpha - 1, -alpha, ply + 1, true, move, 0);
             }
             if (score > alpha && score < beta) {
-                 score = -negamax(pos, depth - 1 + singular_ext, -beta, -alpha, ply + 1, true, move, 0);
+                 score = -negamax(search_context, pos, depth - 1 + singular_ext, -beta, -alpha, ply + 1, true, move, 0);
             }
         }
 
         pos.unmake_move(move);
-        if (context->stop_flag) return 0;
+        if (search_context.stop_flag) return 0;
 
         if (score > best_score) {
             best_score = score;
@@ -887,14 +886,14 @@ struct RootMove {
     int prev_score;
 };
 
-void SearchWorker::iter_deep() {
+void SearchWorker::iter_deep(SearchContext& search_context) {
     Position& pos = root_pos;
     if (thread_id == 0) {
         this->best_move = 0;
         best_score = 0;
         depth_reached = 0;
         pv_length = 0;
-        context->unstable_iteration.store(false, std::memory_order_relaxed);
+        search_context.unstable_iteration.store(false, std::memory_order_relaxed);
     }
 
     // Syzygy Root Probe (Master Only)
@@ -952,7 +951,7 @@ void SearchWorker::iter_deep() {
     bool have_prev = false;
 
     for (int depth = 1; depth <= max_depth; depth++) {
-        if (context->stop_flag) break;
+        if (search_context.stop_flag) break;
 
         // Sorting
         std::stable_sort(root_moves.begin(), root_moves.end(), [](const RootMove& a, const RootMove& b) {
@@ -970,7 +969,7 @@ void SearchWorker::iter_deep() {
         }
 
         while (true) {
-            if (context->stop_flag) break;
+            if (search_context.stop_flag) break;
 
             int score_max = -INFINITY_SCORE;
             int best_move_idx = -1;
@@ -984,16 +983,16 @@ void SearchWorker::iter_deep() {
 
                  int score;
                  if (i == 0 && thread_id == 0) {
-                     score = -negamax(pos, depth - 1, -beta, -alpha, 1, true, m);
+                     score = -negamax(search_context, pos, depth - 1, -beta, -alpha, 1, true, m);
                  } else {
-                     score = -negamax(pos, depth - 1, -alpha - 1, -alpha, 1, true, m);
+                     score = -negamax(search_context, pos, depth - 1, -alpha - 1, -alpha, 1, true, m);
                      if (score > alpha && score < beta) {
-                         score = -negamax(pos, depth - 1, -beta, -alpha, 1, true, m);
+                         score = -negamax(search_context, pos, depth - 1, -beta, -alpha, 1, true, m);
                      }
                  }
 
                  pos.unmake_move(m);
-                 if (context->stop_flag) break;
+                 if (search_context.stop_flag) break;
 
                  root_moves[i].score = score;
                  if (score > score_max) {
@@ -1005,7 +1004,7 @@ void SearchWorker::iter_deep() {
                  if (score >= beta) break;
             }
 
-            if (context->stop_flag) break;
+            if (search_context.stop_flag) break;
 
             // Check Aspiration Bounds (Master only usually, but let's sync)
             if (thread_id == 0) {
@@ -1027,7 +1026,7 @@ void SearchWorker::iter_deep() {
             break;
         }
 
-        if (context->stop_flag) break;
+        if (search_context.stop_flag) break;
 
         // Output Info (Master)
         if (thread_id == 0) {
@@ -1045,9 +1044,9 @@ void SearchWorker::iter_deep() {
                  });
 
              auto now = steady_clock::now();
-             long long ms = duration_cast<milliseconds>(now - context->start_time).count();
-             long long us = duration_cast<microseconds>(now - context->start_time).count();
-             long long nps = (us > 0) ? (context->pool->get_total_nodes() * 1000000LL / us) : 0;
+             long long ms = duration_cast<milliseconds>(now - search_context.start_time).count();
+             long long us = duration_cast<microseconds>(now - search_context.start_time).count();
+             long long nps = (us > 0) ? (search_context.pool->get_total_nodes() * 1000000LL / us) : 0;
 
              std::string score_str = "cp " + std::to_string(best_val);
              if (std::abs(best_val) > 30000) {
@@ -1065,14 +1064,14 @@ void SearchWorker::iter_deep() {
                  if (best_move != prev_best_move) unstable = true;
                  if (best_val < prev_best_score) unstable = true;
              }
-             context->unstable_iteration.store(unstable, std::memory_order_relaxed);
+             search_context.unstable_iteration.store(unstable, std::memory_order_relaxed);
              prev_best_move = best_move;
              prev_best_score = best_val;
              have_prev = true;
 
              if (!limits.silent) {
                  std::cout << "info depth " << depth << " score " << score_str
-                           << " time " << ms << " nodes " << context->pool->get_total_nodes()
+                           << " time " << ms << " nodes " << search_context.pool->get_total_nodes()
                            << " nps " << nps << " pv " << get_pv(pos, best_move) << std::endl;
              }
         }
@@ -1130,18 +1129,14 @@ void Search::start(Position& pos, const SearchLimits& limits) {
     Search::search(pos, limits);
 }
 
-namespace {
-std::atomic<SearchContext*> active_context(nullptr);
-SearchContext default_context;
-}
-
 SearchResult Search::search(Position& pos, const SearchLimits& limits) {
-    active_context.store(&default_context, std::memory_order_release);
-    return Search::search(pos, limits, default_context);
+    SearchContext::active_context.store(&SearchContext::default_context, std::memory_order_release);
+    return Search::search(pos, limits, SearchContext::default_context);
 }
 
 SearchResult Search::search(Position& pos, const SearchLimits& limits, SearchContext& context) {
-    std::call_once(lmr_once, init_lmr);
+    SearchContext::active_context.store(&context, std::memory_order_release);
+    std::call_once(context.lmr_once, [&context]() { context.init_lmr(); });
 
     if (!context.pool->master || (int)context.pool->workers.size() + 1 != OptThreads) {
         context.pool->init(OptThreads);
@@ -1149,6 +1144,7 @@ SearchResult Search::search(Position& pos, const SearchLimits& limits, SearchCon
 
     context.stop_flag = false;
     context.start_time = steady_clock::now();
+    context.options = limits;
     context.nodes_limit_count = limits.nodes;
     context.unstable_iteration.store(false, std::memory_order_relaxed);
 
@@ -1194,7 +1190,7 @@ SearchResult Search::search(Position& pos, const SearchLimits& limits, SearchCon
 }
 
 void Search::stop() {
-    SearchContext* context = active_context.load(std::memory_order_acquire);
+    SearchContext* context = SearchContext::active_context.load(std::memory_order_acquire);
     if (context) {
         context->stop_flag = true;
     }
@@ -1202,13 +1198,13 @@ void Search::stop() {
 
 void Search::clear() {
     TTable.clear();
-    SearchContext* context = active_context.load(std::memory_order_acquire);
+    SearchContext* context = SearchContext::active_context.load(std::memory_order_acquire);
     if (context && context->pool && context->pool->master) {
         context->pool->master->clear_history();
     }
 }
 
 long long Search::get_node_count() {
-    SearchContext* context = active_context.load(std::memory_order_acquire);
+    SearchContext* context = SearchContext::active_context.load(std::memory_order_acquire);
     return context ? context->get_node_count() : 0;
 }
