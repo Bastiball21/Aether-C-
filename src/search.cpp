@@ -99,13 +99,13 @@ class MovePicker {
     bool captures_only;
     bool skip_bad_captures;
     int killer_idx = 0;
+    bool captures_generated = false;
+    bool quiets_generated = false;
 
     enum Stage {
         STAGE_TT_MOVE,
-        STAGE_GEN_CAPTURES,
         STAGE_GOOD_CAPTURES,
         STAGE_KILLERS,
-        STAGE_GEN_QUIETS,
         STAGE_QUIETS,
         STAGE_BAD_CAPTURES,
         STAGE_FINISHED
@@ -126,8 +126,37 @@ public:
     }
 
     MovePicker(const Position& p, SearchWorker& w, bool caps_only, bool skip_bad = false)
-        : pos(p), worker(w), tt_move(0), prev_move(0), ply(0), stage(STAGE_GEN_CAPTURES), captures_only(caps_only), skip_bad_captures(skip_bad), killer_idx(0) {
+        : pos(p), worker(w), tt_move(0), prev_move(0), ply(0), stage(STAGE_GOOD_CAPTURES), captures_only(caps_only), skip_bad_captures(skip_bad), killer_idx(0) {
         killers[0] = killers[1] = 0;
+    }
+
+    void generate_captures() {
+        if (captures_generated) return;
+        MoveGen::generate_captures(pos, list);
+        score_captures();
+        bad_captures.count = 0;
+        int good_count = 0;
+        for (int i = 0; i < list.count; i++) {
+            if (is_bad_capture[i]) {
+                bad_captures.add(list.moves[i]);
+                bad_scores[bad_captures.count - 1] = scores[i];
+            } else {
+                list.moves[good_count] = list.moves[i];
+                scores[good_count] = scores[i];
+                good_count++;
+            }
+        }
+        list.count = good_count;
+        current_idx = 0;
+        captures_generated = true;
+    }
+
+    void generate_quiets() {
+        if (quiets_generated) return;
+        MoveGen::generate_quiets(pos, list);
+        score_quiets();
+        current_idx = 0;
+        quiets_generated = true;
     }
 
     void score_captures() {
@@ -245,31 +274,12 @@ public:
         while (true) {
             switch (stage) {
                 case STAGE_TT_MOVE:
-                    stage = STAGE_GEN_CAPTURES;
+                    stage = STAGE_GOOD_CAPTURES;
                     if (tt_move != 0 && MoveGen::is_pseudo_legal(pos, tt_move)) return tt_move;
                     break;
 
-                case STAGE_GEN_CAPTURES: {
-                    MoveGen::generate_captures(pos, list);
-                    score_captures();
-                    bad_captures.count = 0;
-                    int good_count = 0;
-                    for (int i = 0; i < list.count; i++) {
-                        if (is_bad_capture[i]) {
-                            bad_captures.add(list.moves[i]);
-                            bad_scores[bad_captures.count - 1] = scores[i];
-                        } else {
-                            list.moves[good_count] = list.moves[i];
-                            scores[good_count] = scores[i];
-                            good_count++;
-                        }
-                    }
-                    list.count = good_count;
-                    current_idx = 0;
-                    stage = STAGE_GOOD_CAPTURES;
-                    break;
-                }
                 case STAGE_GOOD_CAPTURES: {
+                    generate_captures();
                     uint16_t m = pick_best(-2000000000);
                     if (m == 0) {
                         if (captures_only) stage = STAGE_BAD_CAPTURES;
@@ -291,15 +301,10 @@ public:
                         }
                         continue;
                     }
-                    stage = STAGE_GEN_QUIETS;
-                    break;
-                case STAGE_GEN_QUIETS:
-                    MoveGen::generate_quiets(pos, list);
-                    score_quiets();
-                    current_idx = 0;
                     stage = STAGE_QUIETS;
                     break;
                 case STAGE_QUIETS: {
+                    generate_quiets();
                     uint16_t m = pick_best(-2000000000);
                     if (m == 0) { stage = STAGE_BAD_CAPTURES; break; }
                     if (m == tt_move) continue;
