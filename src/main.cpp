@@ -460,6 +460,7 @@ int main(int argc, char* argv[]) {
                         Syzygy::set_path(OptSyzygyPath);
                     } else if (name == "UCI_Chess960") {
                         OptChess960 = (value == "true");
+                        pos.set_chess960(OptChess960);
                     } else if (name == "NullMove") {
                         OptNullMove = (value == "true");
                     } else if (name == "ProbCut") {
@@ -484,6 +485,7 @@ int main(int argc, char* argv[]) {
             join_search(); // Safety
             ss >> token;
             if (token == "startpos") {
+                pos.set_chess960(OptChess960);
                 pos.set_startpos();
                 ss >> token; // Check for 'moves'
             } else if (token == "fen") {
@@ -491,6 +493,7 @@ int main(int argc, char* argv[]) {
                 while (ss >> token && token != "moves") {
                     fen += token + " ";
                 }
+                pos.set_chess960(OptChess960);
                 pos.set(fen);
             }
 

@@ -124,6 +124,7 @@ void Position::move_piece(Square from, Square to) {
 }
 
 void Position::set(const std::string& fen) {
+    bool use_chess960 = chess960;
     // Clear
     std::memset(piece_bb, 0, sizeof(piece_bb));
     std::memset(color_bb, 0, sizeof(color_bb));
@@ -134,7 +135,7 @@ void Position::set(const std::string& fen) {
     for (auto& row : castle_rook_from)
         for (auto& entry : row)
             entry = SQ_NONE;
-    chess960 = false;
+    chess960 = use_chess960;
     rule50 = 0;
     halfmove_clock = 0;
     st_key = 0;
@@ -196,7 +197,7 @@ void Position::set(const std::string& fen) {
             }
         }
     }
-    chess960 = has_file_rights;
+    chess960 = chess960 || has_file_rights;
 
     auto king_square_for = [&](Color c) -> Square {
         Bitboard king_bb = pieces(KING, c);
@@ -206,17 +207,47 @@ void Position::set(const std::string& fen) {
 
     if (token != "-") {
         if (chess960) {
-            for (char c : token) {
-                if (!((c >= 'A' && c <= 'H') || (c >= 'a' && c <= 'h'))) continue;
-                Color color = (c >= 'A' && c <= 'H') ? WHITE : BLACK;
-                File rook_file = (File)((c >= 'A' && c <= 'H') ? (c - 'A') : (c - 'a'));
+            auto find_rook_on_side = [&](Color color, int side_index) -> Square {
                 Square king_sq = king_square_for(color);
-                if (king_sq == SQ_NONE) continue;
-                int side_index = (rook_file > file_of(king_sq)) ? 0 : 1;
-                Square rook_sq = square_of(rook_file, rank_of(king_sq));
+                if (king_sq == SQ_NONE) return SQ_NONE;
+                int king_file = file_of(king_sq);
+                Rank king_rank = rank_of(king_sq);
+                int step = (side_index == 0) ? 1 : -1;
+                for (int f = king_file + step; f >= 0 && f < 8; f += step) {
+                    Square sq = square_of((File)f, king_rank);
+                    Piece expected_rook = (color == WHITE) ? W_ROOK : B_ROOK;
+                    if (board[sq] == expected_rook) {
+                        return sq;
+                    }
+                }
+                return SQ_NONE;
+            };
+
+            auto add_castle_right = [&](Color color, int side_index, Square rook_sq) {
+                if (rook_sq == SQ_NONE) return;
                 castle_rook_from[color][side_index] = rook_sq;
                 if (color == WHITE) castling |= (side_index == 0) ? 1 : 2;
                 else castling |= (side_index == 0) ? 4 : 8;
+            };
+
+            for (char c : token) {
+                if ((c >= 'A' && c <= 'H') || (c >= 'a' && c <= 'h')) {
+                    Color color = (c >= 'A' && c <= 'H') ? WHITE : BLACK;
+                    File rook_file = (File)((c >= 'A' && c <= 'H') ? (c - 'A') : (c - 'a'));
+                    Square king_sq = king_square_for(color);
+                    if (king_sq == SQ_NONE) continue;
+                    int side_index = (rook_file > file_of(king_sq)) ? 0 : 1;
+                    Square rook_sq = square_of(rook_file, rank_of(king_sq));
+                    Piece expected_rook = (color == WHITE) ? W_ROOK : B_ROOK;
+                    if (board[rook_sq] != expected_rook) continue;
+                    add_castle_right(color, side_index, rook_sq);
+                    continue;
+                }
+
+                if (c == 'K') add_castle_right(WHITE, 0, find_rook_on_side(WHITE, 0));
+                else if (c == 'Q') add_castle_right(WHITE, 1, find_rook_on_side(WHITE, 1));
+                else if (c == 'k') add_castle_right(BLACK, 0, find_rook_on_side(BLACK, 0));
+                else if (c == 'q') add_castle_right(BLACK, 1, find_rook_on_side(BLACK, 1));
             }
         } else {
             for (char c : token) {

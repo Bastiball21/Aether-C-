@@ -569,6 +569,7 @@ void run_datagen(const DatagenConfig& config) {
                 }
 
                 Position pos;
+                pos.set_chess960(config.chess960);
                 bool use_book = !book.fens.empty();
                 bool use_random_walk = false;
                 if (use_book && config.book_random_walk_pct > 0) {

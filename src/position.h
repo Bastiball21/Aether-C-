@@ -29,6 +29,8 @@ public:
     // Setup
     void set(const std::string& fen);
     void set_startpos();
+    void set_chess960(bool enabled) { chess960 = enabled; }
+    bool is_chess960() const { return chess960; }
 
     // Accessors
     Bitboard pieces(PieceType pt, Color c) const { return piece_bb[pt] & color_bb[c]; }
