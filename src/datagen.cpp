@@ -569,7 +569,12 @@ void run_datagen(const DatagenConfig& config) {
                 }
 
                 Position pos;
-                if (!book.fens.empty()) {
+                bool use_book = !book.fens.empty();
+                bool use_random_walk = false;
+                if (use_book && config.book_random_walk_pct > 0) {
+                    use_random_walk = rng.range(0, 100) < config.book_random_walk_pct;
+                }
+                if (use_book && !use_random_walk) {
                     const size_t idx = rng.range(0, book.fens.size());
                     pos.set(book.fens[idx]);
                 } else {
@@ -596,6 +601,25 @@ void run_datagen(const DatagenConfig& config) {
                 float result = 0.5f;
                 bool finished = false;
                 bool last_move_interesting = false;
+
+                if (use_random_walk && config.opening_random_plies > 0) {
+                    for (int i = 0; i < config.opening_random_plies; ++i) {
+                        MoveGen::MoveList list;
+                        MoveGen::generate_all(pos, list);
+                        if (list.count == 0) {
+                            break;
+                        }
+                        uint16_t move = pick_random_opening_move(pos, list, rng, seen_positions);
+                        if (move == 0) {
+                            break;
+                        }
+                        rolling_hash = rng.splitmix(rolling_hash ^ pos.key() ^ move);
+                        pos.make_move(move);
+                        seen_positions.insert(pos.key());
+                        repetition_counts[pos.key()] += 1;
+                        ply += 1;
+                    }
+                }
 
                 while (!finished && ply < MAX_PLIES) {
                     if (pos.rule50_count() >= 100 || repetition_counts[pos.key()] >= 3) {
