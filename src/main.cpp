@@ -120,6 +120,10 @@ int main(int argc, char* argv[]) {
     // Initialize Eval Params
     Eval::init_params();
 
+    // Initialize TT with default
+    TTable.set_large_pages(OptLargePages);
+    TTable.resize(OptHash);
+
     // CLI Mode Check
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -394,10 +398,6 @@ int main(int argc, char* argv[]) {
 
     Position pos;
     pos.set_startpos();
-
-    // Initialize TT with default
-    TTable.set_large_pages(OptLargePages);
-    TTable.resize(OptHash);
 
     Eval::set_contempt(OptContempt);
 
