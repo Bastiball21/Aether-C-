@@ -37,6 +37,8 @@ struct SearchLimits {
     bool use_probcut = true;
     bool use_singular = true;
     bool use_history = true;
+    bool use_tt_new_search = true;
+    bool use_global_context = true;
 };
 
 struct SearchResult {

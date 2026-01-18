@@ -1140,7 +1140,9 @@ SearchResult Search::search(Position& pos, const SearchLimits& limits) {
 }
 
 SearchResult Search::search(Position& pos, const SearchLimits& limits, SearchContext& context) {
-    SearchContext::active_context.store(&context, std::memory_order_release);
+    if (limits.use_global_context) {
+        SearchContext::active_context.store(&context, std::memory_order_release);
+    }
     std::call_once(context.lmr_once, [&context]() { context.init_lmr(); });
 
     if (!context.pool->master || (int)context.pool->workers.size() + 1 != OptThreads) {
@@ -1176,7 +1178,9 @@ SearchResult Search::search(Position& pos, const SearchLimits& limits, SearchCon
         context.hard_time_limit = limit;
     }
 
-    TTable.new_search();
+    if (limits.use_tt_new_search) {
+        TTable.new_search();
+    }
     context.pool->start_search(pos, limits);
     context.pool->master->search_loop();
 

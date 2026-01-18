@@ -396,9 +396,9 @@ uint16_t pick_policy_move(const SearchResult& result, Rng& rng, int ply,
 }
 
 void writer_thread(std::ofstream& out, std::mutex& out_mutex, std::condition_variable& cv,
-    std::queue<QueueItem>& queue, std::atomic<bool>& done, int64_t total_games,
-    std::atomic<long>& games_total, std::atomic<long>& positions_total,
-    std::atomic<long>& duplicates_total, size_t writer_lru_size) {
+    std::queue<QueueItem>& queue, std::atomic<bool>& done, std::atomic<long>& games_written,
+    std::atomic<long>& positions_total, std::atomic<long>& duplicates_total,
+    size_t writer_lru_size) {
     LruKeySet seen(writer_lru_size);
 
     while (true) {
@@ -424,10 +424,7 @@ void writer_thread(std::ofstream& out, std::mutex& out_mutex, std::condition_var
             positions_total.fetch_add(1);
         }
 
-        long games_written = games_total.fetch_add(1) + 1;
-        if (games_written >= total_games) {
-            done.store(true);
-        }
+        games_written.fetch_add(1);
     }
 }
 
@@ -506,7 +503,8 @@ void run_datagen(const DatagenConfig& config) {
     std::condition_variable cv;
     std::queue<QueueItem> queue;
     std::atomic<bool> done(false);
-    std::atomic<long> games_total(0);
+    std::atomic<long> games_completed(0);
+    std::atomic<long> games_written(0);
     std::atomic<long> nodes_total(0);
     std::atomic<long> positions_total(0);
     std::atomic<long> duplicates_total(0);
@@ -516,15 +514,16 @@ void run_datagen(const DatagenConfig& config) {
     }
 
     std::thread writer([&] {
-        writer_thread(out, out_mutex, cv, queue, done, config.num_games, games_total,
-            positions_total, duplicates_total, writer_lru_size);
+        writer_thread(out, out_mutex, cv, queue, done, games_written, positions_total,
+            duplicates_total, writer_lru_size);
     });
 
     std::thread status([&] {
         auto start_time = std::chrono::steady_clock::now();
         while (!done.load()) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            long games = games_total.load();
+            long games = games_completed.load();
+            long written = games_written.load();
             long nodes = nodes_total.load();
             long positions = positions_total.load();
             long dups = duplicates_total.load();
@@ -546,7 +545,8 @@ void run_datagen(const DatagenConfig& config) {
                 eta_stream << eta_secs << "s";
             }
 
-            std::cout << "[Datagen] Games: " << games
+            std::cout << "[Datagen] Games: " << games << "/" << config.num_games
+                      << " | Written: " << written
                       << " | Nodes: " << format_count(nodes)
                       << " | NPS: " << format_count(nps)
                       << " | FPS: " << static_cast<long>(pps)
@@ -663,6 +663,8 @@ void run_datagen(const DatagenConfig& config) {
                     limits.nodes = game_search_nodes;
                     limits.silent = true;
                     limits.seed = rng.next_u64();
+                    limits.use_tt_new_search = false;
+                    limits.use_global_context = false;
 
                     SearchResult search_result = Search::search(pos, limits, search_context);
                     nodes_total.fetch_add(static_cast<long>(search_context.get_node_count()));
@@ -825,6 +827,13 @@ void run_datagen(const DatagenConfig& config) {
                         queue.push(std::move(item));
                     }
                     cv.notify_one();
+                }
+
+                long completed = games_completed.fetch_add(1) + 1;
+                if (completed >= config.num_games) {
+                    done.store(true);
+                    cv.notify_one();
+                    break;
                 }
             }
         });
