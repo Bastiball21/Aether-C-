@@ -79,6 +79,7 @@ private:
     void put_piece(Piece p, Square s);
     void remove_piece(Square s);
     void move_piece(Square from, Square to);
+    Key castling_key() const;
 
     // Data
     Bitboard piece_bb[PIECE_TYPE_NB];
@@ -89,6 +90,7 @@ private:
     Square ep_square;
     int castling; // Format: 1=WK, 2=WQ, 4=BK, 8=BQ
     Square castle_rook_from[COLOR_NB][2];
+    bool chess960;
     int rule50;
     int halfmove_clock; // Total plies
 
