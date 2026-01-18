@@ -10,6 +10,7 @@ namespace Zobrist {
     Key psq[12][64];
     Key side;
     Key castle[16];
+    Key castle_rook[COLOR_NB][2][65];
     Key enpassant[65]; // 64 + none
 
     void init() {
@@ -30,6 +31,11 @@ namespace Zobrist {
 
         for (int i = 0; i < 16; i++)
             castle[i] = rand64();
+
+        for (int c = 0; c < COLOR_NB; c++)
+            for (int s = 0; s < 2; s++)
+                for (int i = 0; i < 65; i++)
+                    castle_rook[c][s][i] = rand64();
 
         for (int i = 0; i < 65; i++)
             enpassant[i] = rand64();
@@ -128,6 +134,7 @@ void Position::set(const std::string& fen) {
     for (auto& row : castle_rook_from)
         for (auto& entry : row)
             entry = SQ_NONE;
+    chess960 = false;
     rule50 = 0;
     halfmove_clock = 0;
     st_key = 0;
@@ -180,50 +187,62 @@ void Position::set(const std::string& fen) {
 
     // 3. Castling
     ss >> token;
+    bool has_file_rights = false;
     if (token != "-") {
         for (char c : token) {
-            if (c == 'K') castling |= 1;
-            else if (c == 'Q') castling |= 2;
-            else if (c == 'k') castling |= 4;
-            else if (c == 'q') castling |= 8;
-        }
-    }
-    st_key ^= Zobrist::castle[castling];
-
-    auto assign_castle_rook = [&](Color c, int side_index, int right_mask) {
-        if (!(castling & right_mask)) {
-            castle_rook_from[c][side_index] = SQ_NONE;
-            return;
-        }
-        Bitboard king_bb = pieces(KING, c);
-        if (!king_bb) {
-            castle_rook_from[c][side_index] = SQ_NONE;
-            return;
-        }
-        Square king_sq = (Square)Bitboards::lsb(king_bb);
-        Rank king_rank = rank_of(king_sq);
-        int king_file = file_of(king_sq);
-        Square best = SQ_NONE;
-        Bitboard rooks = pieces(ROOK, c);
-        while (rooks) {
-            Square rsq = (Square)Bitboards::pop_lsb(rooks);
-            if (rank_of(rsq) != king_rank) continue;
-            int rook_file = file_of(rsq);
-            if (side_index == 0) {
-                if (rook_file <= king_file) continue;
-                if (best == SQ_NONE || rook_file < file_of(best)) best = rsq;
-            } else {
-                if (rook_file >= king_file) continue;
-                if (best == SQ_NONE || rook_file > file_of(best)) best = rsq;
+            if ((c >= 'A' && c <= 'H') || (c >= 'a' && c <= 'h')) {
+                has_file_rights = true;
+                break;
             }
         }
-        castle_rook_from[c][side_index] = best;
+    }
+    chess960 = has_file_rights;
+
+    auto king_square_for = [&](Color c) -> Square {
+        Bitboard king_bb = pieces(KING, c);
+        if (!king_bb) return SQ_NONE;
+        return (Square)Bitboards::lsb(king_bb);
     };
 
-    assign_castle_rook(WHITE, 0, 1);
-    assign_castle_rook(WHITE, 1, 2);
-    assign_castle_rook(BLACK, 0, 4);
-    assign_castle_rook(BLACK, 1, 8);
+    if (token != "-") {
+        if (chess960) {
+            for (char c : token) {
+                if (!((c >= 'A' && c <= 'H') || (c >= 'a' && c <= 'h'))) continue;
+                Color color = (c >= 'A' && c <= 'H') ? WHITE : BLACK;
+                File rook_file = (File)((c >= 'A' && c <= 'H') ? (c - 'A') : (c - 'a'));
+                Square king_sq = king_square_for(color);
+                if (king_sq == SQ_NONE) continue;
+                int side_index = (rook_file > file_of(king_sq)) ? 0 : 1;
+                Square rook_sq = square_of(rook_file, rank_of(king_sq));
+                castle_rook_from[color][side_index] = rook_sq;
+                if (color == WHITE) castling |= (side_index == 0) ? 1 : 2;
+                else castling |= (side_index == 0) ? 4 : 8;
+            }
+        } else {
+            for (char c : token) {
+                if (c == 'K') castling |= 1;
+                else if (c == 'Q') castling |= 2;
+                else if (c == 'k') castling |= 4;
+                else if (c == 'q') castling |= 8;
+            }
+
+            auto assign_standard_rook = [&](Color c, int side_index, int right_mask, File rook_file) {
+                if (!(castling & right_mask)) {
+                    castle_rook_from[c][side_index] = SQ_NONE;
+                    return;
+                }
+                Square king_sq = king_square_for(c);
+                Rank rook_rank = (king_sq == SQ_NONE) ? (c == WHITE ? RANK_1 : RANK_8) : rank_of(king_sq);
+                castle_rook_from[c][side_index] = square_of(rook_file, rook_rank);
+            };
+
+            assign_standard_rook(WHITE, 0, 1, FILE_H);
+            assign_standard_rook(WHITE, 1, 2, FILE_A);
+            assign_standard_rook(BLACK, 0, 4, FILE_H);
+            assign_standard_rook(BLACK, 1, 8, FILE_A);
+        }
+    }
+    st_key ^= castling_key();
 
     // 4. EP
     ss >> token;
@@ -374,7 +393,7 @@ void Position::make_move(uint16_t move) {
     }
 
     // Update Castling Rights
-    st_key ^= Zobrist::castle[castling];
+    st_key ^= castling_key();
     if (pt == KING) {
         if (side == WHITE) castling &= ~3;
         else castling &= ~12;
@@ -388,7 +407,7 @@ void Position::make_move(uint16_t move) {
     };
     check_rook(from);
     check_rook(to);
-    st_key ^= Zobrist::castle[castling];
+    st_key ^= castling_key();
 
     // Update EP
     st_key ^= Zobrist::enpassant[ep_square];
@@ -587,10 +606,26 @@ std::string Position::fen() const {
     if (castling == 0) {
         out += "- ";
     } else {
-        if (castling & 1) out += 'K';
-        if (castling & 2) out += 'Q';
-        if (castling & 4) out += 'k';
-        if (castling & 8) out += 'q';
+        if (chess960) {
+            auto append_file = [&](Color c, int side_index, int mask, char fallback) {
+                if (!(castling & mask)) return;
+                Square rook_sq = castle_rook_from[c][side_index];
+                int file = (rook_sq == SQ_NONE) ? (fallback - 'a') : file_of(rook_sq);
+                char letter = char('a' + file);
+                if (c == WHITE) letter = char(letter - 'a' + 'A');
+                out += letter;
+            };
+
+            append_file(WHITE, 0, 1, 'h');
+            append_file(WHITE, 1, 2, 'a');
+            append_file(BLACK, 0, 4, 'h');
+            append_file(BLACK, 1, 8, 'a');
+        } else {
+            if (castling & 1) out += 'K';
+            if (castling & 2) out += 'Q';
+            if (castling & 4) out += 'k';
+            if (castling & 8) out += 'q';
+        }
         out += ' ';
     }
 
@@ -610,6 +645,15 @@ std::string Position::fen() const {
     out += std::to_string(fullmove);
 
     return out;
+}
+
+Key Position::castling_key() const {
+    Key key = Zobrist::castle[castling];
+    if (castling & 1) key ^= Zobrist::castle_rook[WHITE][0][castle_rook_from[WHITE][0]];
+    if (castling & 2) key ^= Zobrist::castle_rook[WHITE][1][castle_rook_from[WHITE][1]];
+    if (castling & 4) key ^= Zobrist::castle_rook[BLACK][0][castle_rook_from[BLACK][0]];
+    if (castling & 8) key ^= Zobrist::castle_rook[BLACK][1][castle_rook_from[BLACK][1]];
+    return key;
 }
 
 
