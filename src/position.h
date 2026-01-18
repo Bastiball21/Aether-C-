@@ -15,6 +15,7 @@ public:
         Key key;
         Key pawn_key;
         int castling;
+        Square castle_rook_from[COLOR_NB][2];
         Square ep_square;
         int rule50;
         Piece captured;
@@ -41,6 +42,7 @@ public:
     Key pawn_key() const { return p_key; }
     Square en_passant_square() const { return ep_square; }
     int castling_rights_mask() const { return castling; }
+    Square castling_rook_from(Color c, int side) const { return castle_rook_from[c][side]; }
     int rule50_count() const { return rule50; }
     int fullmove_number() const { return halfmove_clock / 2 + 1; }
     int eval_mg() const { return eval_mg_acc; }
@@ -86,6 +88,7 @@ private:
     Color side;
     Square ep_square;
     int castling; // Format: 1=WK, 2=WQ, 4=BK, 8=BQ
+    Square castle_rook_from[COLOR_NB][2];
     int rule50;
     int halfmove_clock; // Total plies
 
