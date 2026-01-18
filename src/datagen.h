@@ -16,7 +16,7 @@ struct DatagenConfig {
     int book_random_walk_pct = 0;
     int64_t search_nodes = 0;
     double search_nodes_jitter = 0.2;
-    int search_depth = 1;
+    int search_depth = 0;
     int sample_top_n = 4;
     int sample_top_k = 4;
     int temp_schedule_plies = 40;

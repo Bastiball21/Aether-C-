@@ -659,7 +659,7 @@ void run_datagen(const DatagenConfig& config) {
                     }
 
                     SearchLimits limits;
-                    limits.depth = std::max(1, config.search_depth);
+                    limits.depth = config.search_depth;
                     limits.nodes = game_search_nodes;
                     limits.silent = true;
                     limits.seed = rng.next_u64();
