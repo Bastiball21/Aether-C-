@@ -233,6 +233,9 @@ int main(int argc, char* argv[]) {
                 } else if (opt == "--random-plies" && j + 1 < argc) {
                     cfg.opening_random_plies = std::stoi(argv[j + 1]);
                     j += 1;
+                } else if (opt == "--book-random-walk-pct" && j + 1 < argc) {
+                    cfg.book_random_walk_pct = std::stoi(argv[j + 1]);
+                    j += 1;
                 } else if ((opt == "--nodes" || opt == "--nodes-per-move") && j + 1 < argc) {
                     cfg.search_nodes = std::stoll(argv[j + 1]);
                     j += 1;
@@ -363,6 +366,10 @@ int main(int argc, char* argv[]) {
             }
             if (cfg.gap_skip_cp < 0) {
                 std::cerr << "gap-skip-cp must be >= 0\n";
+                return 1;
+            }
+            if (cfg.book_random_walk_pct < 0 || cfg.book_random_walk_pct > 100) {
+                std::cerr << "book-random-walk-pct must be between 0 and 100\n";
                 return 1;
             }
 

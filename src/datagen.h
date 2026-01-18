@@ -13,6 +13,7 @@ struct DatagenConfig {
     bool chess960 = false;
     std::string opening_book_path;
     int opening_random_plies = 8;
+    int book_random_walk_pct = 0;
     int64_t search_nodes = 0;
     double search_nodes_jitter = 0.2;
     int search_depth = 1;
