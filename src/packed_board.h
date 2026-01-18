@@ -48,8 +48,8 @@ struct PackedBoardV2NoPly {
 #pragma pack(pop)
 
 static_assert(sizeof(PackedBoardV1) == 32, "PackedBoardV1 must be exactly 32 bytes");
-static_assert(sizeof(PackedBoardV2) == 36, "PackedBoardV2 must be exactly 36 bytes");
-static_assert(sizeof(PackedBoardV2NoPly) == 34, "PackedBoardV2NoPly must be exactly 34 bytes");
+static_assert(sizeof(PackedBoardV2) == 37, "PackedBoardV2 must be exactly 37 bytes");
+static_assert(sizeof(PackedBoardV2NoPly) == 35, "PackedBoardV2NoPly must be exactly 35 bytes");
 
 void pack_position_v1(const Position& pos, int16_t score_stm, uint8_t wdl, float game_result,
     PackedBoardV1& dest);
