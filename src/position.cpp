@@ -125,6 +125,9 @@ void Position::set(const std::string& fen) {
     side = WHITE;
     ep_square = SQ_NONE;
     castling = 0;
+    for (auto& row : castle_rook_from)
+        for (auto& entry : row)
+            entry = SQ_NONE;
     rule50 = 0;
     halfmove_clock = 0;
     st_key = 0;
@@ -187,6 +190,41 @@ void Position::set(const std::string& fen) {
     }
     st_key ^= Zobrist::castle[castling];
 
+    auto assign_castle_rook = [&](Color c, int side_index, int right_mask) {
+        if (!(castling & right_mask)) {
+            castle_rook_from[c][side_index] = SQ_NONE;
+            return;
+        }
+        Bitboard king_bb = pieces(KING, c);
+        if (!king_bb) {
+            castle_rook_from[c][side_index] = SQ_NONE;
+            return;
+        }
+        Square king_sq = (Square)Bitboards::lsb(king_bb);
+        Rank king_rank = rank_of(king_sq);
+        int king_file = file_of(king_sq);
+        Square best = SQ_NONE;
+        Bitboard rooks = pieces(ROOK, c);
+        while (rooks) {
+            Square rsq = (Square)Bitboards::pop_lsb(rooks);
+            if (rank_of(rsq) != king_rank) continue;
+            int rook_file = file_of(rsq);
+            if (side_index == 0) {
+                if (rook_file <= king_file) continue;
+                if (best == SQ_NONE || rook_file < file_of(best)) best = rsq;
+            } else {
+                if (rook_file >= king_file) continue;
+                if (best == SQ_NONE || rook_file > file_of(best)) best = rsq;
+            }
+        }
+        castle_rook_from[c][side_index] = best;
+    };
+
+    assign_castle_rook(WHITE, 0, 1);
+    assign_castle_rook(WHITE, 1, 2);
+    assign_castle_rook(BLACK, 0, 4);
+    assign_castle_rook(BLACK, 1, 8);
+
     // 4. EP
     ss >> token;
     if (token != "-") {
@@ -227,6 +265,7 @@ void Position::set(const std::string& fen) {
     si.key = st_key;
     si.pawn_key = p_key;
     si.castling = castling;
+    std::memcpy(si.castle_rook_from, castle_rook_from, sizeof(castle_rook_from));
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE;
@@ -258,6 +297,7 @@ void Position::make_move(uint16_t move) {
     si.key = st_key;
     si.pawn_key = p_key;
     si.castling = castling;
+    std::memcpy(si.castle_rook_from, castle_rook_from, sizeof(castle_rook_from));
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE; // Will fill if capture
@@ -318,17 +358,13 @@ void Position::make_move(uint16_t move) {
     // Castling
     Square rook_from = SQ_NONE, rook_to = SQ_NONE;
     if (flag == 2) { // King Side
-        rook_from = (side == WHITE) ? SQ_H1 : SQ_H8;
+        rook_from = castle_rook_from[side][0];
         rook_to = (side == WHITE) ? SQ_F1 : SQ_F8;
-        Piece rook = (side == WHITE) ? W_ROOK : B_ROOK;
-        eval_mg_acc -= piece_mg_value(rook, rook_from);
-        eval_eg_acc -= piece_eg_value(rook, rook_from);
-        eval_mg_acc += piece_mg_value(rook, rook_to);
-        eval_eg_acc += piece_eg_value(rook, rook_to);
-        move_piece(rook_from, rook_to);
     } else if (flag == 3) { // Queen Side
-        rook_from = (side == WHITE) ? SQ_A1 : SQ_A8;
+        rook_from = castle_rook_from[side][1];
         rook_to = (side == WHITE) ? SQ_D1 : SQ_D8;
+    }
+    if (rook_from != SQ_NONE) {
         Piece rook = (side == WHITE) ? W_ROOK : B_ROOK;
         eval_mg_acc -= piece_mg_value(rook, rook_from);
         eval_eg_acc -= piece_eg_value(rook, rook_from);
@@ -345,10 +381,10 @@ void Position::make_move(uint16_t move) {
     }
     // Rooks moved or captured
     auto check_rook = [&](Square sq) {
-        if (sq == SQ_H1) castling &= ~1;
-        else if (sq == SQ_A1) castling &= ~2;
-        else if (sq == SQ_H8) castling &= ~4;
-        else if (sq == SQ_A8) castling &= ~8;
+        if (sq == castle_rook_from[WHITE][0]) castling &= ~1;
+        else if (sq == castle_rook_from[WHITE][1]) castling &= ~2;
+        else if (sq == castle_rook_from[BLACK][0]) castling &= ~4;
+        else if (sq == castle_rook_from[BLACK][1]) castling &= ~8;
     };
     check_rook(from);
     check_rook(to);
@@ -377,6 +413,7 @@ void Position::make_null_move() {
     si.key = st_key;
     si.pawn_key = p_key;
     si.castling = castling;
+    std::memcpy(si.castle_rook_from, castle_rook_from, sizeof(castle_rook_from));
     si.ep_square = ep_square;
     si.rule50 = rule50;
     si.captured = NO_PIECE;
@@ -409,6 +446,7 @@ void Position::unmake_null_move() {
     rule50 = si.rule50;
     st_key = si.key;
     p_key = si.pawn_key;
+    std::memcpy(castle_rook_from, si.castle_rook_from, sizeof(castle_rook_from));
     eval_mg_acc = si.eval_mg;
     eval_eg_acc = si.eval_eg;
     eval_phase_acc = si.eval_phase;
@@ -448,18 +486,17 @@ void Position::unmake_move(uint16_t move) {
     }
 
     // Revert Castling Move
-    if (flag == 2) {
-        Square r_from = (side == WHITE) ? SQ_H1 : SQ_H8;
-        Square r_to = (side == WHITE) ? SQ_F1 : SQ_F8;
-        move_piece(r_to, r_from);
-    } else if (flag == 3) {
-        Square r_from = (side == WHITE) ? SQ_A1 : SQ_A8;
-        Square r_to = (side == WHITE) ? SQ_D1 : SQ_D8;
-        move_piece(r_to, r_from);
+    if (flag == 2 || flag == 3) {
+        Square r_from = (flag == 2) ? castle_rook_from[side][0] : castle_rook_from[side][1];
+        Square r_to = (side == WHITE) ? ((flag == 2) ? SQ_F1 : SQ_D1) : ((flag == 2) ? SQ_F8 : SQ_D8);
+        if (r_from != SQ_NONE) {
+            move_piece(r_to, r_from);
+        }
     }
 
     // Restore State
     castling = si.castling;
+    std::memcpy(castle_rook_from, si.castle_rook_from, sizeof(castle_rook_from));
     ep_square = si.ep_square;
     rule50 = si.rule50;
     st_key = si.key;

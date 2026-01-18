@@ -141,38 +141,50 @@ namespace MoveGen {
         if (pos.in_check()) return;
 
         int rights = pos.castling_rights_mask();
+        constexpr Color Them = (Us == WHITE) ? BLACK : WHITE;
         Bitboard occ = pos.pieces();
+        Square king_from = (Square)Bitboards::lsb(pos.pieces(KING, Us));
+
+        auto try_castle = [&](int right_mask, int side_index, Square king_to, Square rook_to) {
+            if (!(rights & right_mask)) return;
+
+            Square rook_from = pos.castling_rook_from(Us, side_index);
+            if (rook_from == SQ_NONE) return;
+
+            if (rank_of(king_from) != rank_of(rook_from)) return;
+
+            Piece expected_rook = (Us == WHITE) ? W_ROOK : B_ROOK;
+            if (pos.piece_on(rook_from) != expected_rook) return;
+
+            int king_file = file_of(king_from);
+            int rook_file = file_of(rook_from);
+            int step = (rook_file > king_file) ? 1 : -1;
+            for (int f = king_file + step; f != rook_file; f += step) {
+                Square sq = square_of((File)f, rank_of(king_from));
+                if (Bitboards::check_bit(occ, sq)) return;
+            }
+
+            if (king_from != king_to) {
+                int king_step = (file_of(king_to) > king_file) ? 1 : -1;
+                for (int f = king_file + king_step;; f += king_step) {
+                    Square sq = square_of((File)f, rank_of(king_from));
+                    if (sq != rook_from && Bitboards::check_bit(occ, sq)) return;
+                    if (pos.is_attacked(sq, Them)) return;
+                    if (sq == king_to) break;
+                }
+            }
+
+            if (rook_to != rook_from && rook_to != king_from && Bitboards::check_bit(occ, rook_to)) return;
+
+            list.add(encode(king_from, king_to, side_index == 0 ? 2 : 3));
+        };
 
         if (Us == WHITE) {
-            if (rights & 1) { // K
-                if (!Bitboards::check_bit(occ, SQ_F1) && !Bitboards::check_bit(occ, SQ_G1)) {
-                    if (!pos.is_attacked(SQ_F1, BLACK) && !pos.is_attacked(SQ_G1, BLACK)) {
-                        list.add(encode(SQ_E1, SQ_G1, 2));
-                    }
-                }
-            }
-            if (rights & 2) { // Q
-                if (!Bitboards::check_bit(occ, SQ_D1) && !Bitboards::check_bit(occ, SQ_C1) && !Bitboards::check_bit(occ, SQ_B1)) {
-                    if (!pos.is_attacked(SQ_D1, BLACK) && !pos.is_attacked(SQ_C1, BLACK)) {
-                         list.add(encode(SQ_E1, SQ_C1, 3));
-                    }
-                }
-            }
+            try_castle(1, 0, SQ_G1, SQ_F1);
+            try_castle(2, 1, SQ_C1, SQ_D1);
         } else {
-            if (rights & 4) { // k
-                if (!Bitboards::check_bit(occ, SQ_F8) && !Bitboards::check_bit(occ, SQ_G8)) {
-                     if (!pos.is_attacked(SQ_F8, WHITE) && !pos.is_attacked(SQ_G8, WHITE)) {
-                        list.add(encode(SQ_E8, SQ_G8, 2));
-                    }
-                }
-            }
-            if (rights & 8) { // q
-                if (!Bitboards::check_bit(occ, SQ_D8) && !Bitboards::check_bit(occ, SQ_C8) && !Bitboards::check_bit(occ, SQ_B8)) {
-                    if (!pos.is_attacked(SQ_D8, WHITE) && !pos.is_attacked(SQ_C8, WHITE)) {
-                        list.add(encode(SQ_E8, SQ_C8, 3));
-                    }
-                }
-            }
+            try_castle(4, 0, SQ_G8, SQ_F8);
+            try_castle(8, 1, SQ_C8, SQ_D8);
         }
     }
 
