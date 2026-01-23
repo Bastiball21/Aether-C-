@@ -14,9 +14,9 @@ struct DatagenConfig {
     std::string opening_book_path;
     int opening_random_plies = 8;
     int book_random_walk_pct = 0;
-    int64_t search_nodes = 0;
+    int64_t search_nodes = 50000; // Default to 50k nodes for high quality
     double search_nodes_jitter = 0.2;
-    int search_depth = 1;
+    int search_depth = 0; // Default to 0 so nodes limit takes precedence
     int sample_top_n = 4;
     int sample_top_k = 4;
     int temp_schedule_plies = 40;
@@ -37,6 +37,7 @@ struct DatagenConfig {
     size_t writer_lru_size = 0;
     PackedFormat output_format = PackedFormat::V2;
     bool adjudicate = true;
+    bool strict_rust_mode = true; // Enable Rust-alignment by default
 };
 
 void run_datagen(const DatagenConfig& config);

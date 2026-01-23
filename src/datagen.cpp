@@ -32,12 +32,13 @@
 
 namespace {
 
-constexpr int MERCY_CP = 1200;
-constexpr int MERCY_PLIES = 10;
-constexpr int WIN_CP = 800;
-constexpr int WIN_STABLE_PLIES = 8;
-constexpr int DRAW_CP = 40;
-constexpr int DRAW_PLIES = 24;
+// Rust-aligned constants
+constexpr int MERCY_CP = 1000;
+constexpr int MERCY_PLIES = 8;
+constexpr int WIN_CP = 700;
+constexpr int WIN_STABLE_PLIES = 6;
+constexpr int DRAW_CP = 50;
+constexpr int DRAW_PLIES = 20;
 constexpr int DRAW_START_PLY = 30;
 constexpr int MIN_ADJUDICATE_DEPTH = 10;
 constexpr int STABLE_SCORE_DELTA = 40;
@@ -603,8 +604,14 @@ void run_datagen(const DatagenConfig& config) {
                 bool finished = false;
                 bool last_move_interesting = false;
 
-                if (use_random_walk && config.opening_random_plies > 0) {
-                    for (int i = 0; i < config.opening_random_plies; ++i) {
+                // Random Walk (8-9 plies if strict_rust_mode, otherwise config)
+                int opening_plies = config.opening_random_plies;
+                if (config.strict_rust_mode) {
+                    opening_plies = 8 + rng.range(0, 2);
+                }
+
+                if (use_random_walk && opening_plies > 0) {
+                    for (int i = 0; i < opening_plies; ++i) {
                         MoveGen::MoveList list;
                         MoveGen::generate_all(pos, list);
                         if (list.count == 0) {
@@ -620,6 +627,21 @@ void run_datagen(const DatagenConfig& config) {
                         repetition_counts[pos.key()] += 1;
                         ply += 1;
                     }
+                }
+
+                // Filtering thresholds (Override if strict mode)
+                int balance_equal_cp = config.balance_equal_cp;
+                int balance_moderate_cp = config.balance_moderate_cp;
+                int balance_equal_keep = config.balance_equal_keep;
+                int balance_moderate_keep = config.balance_moderate_keep;
+                int balance_extreme_keep = config.balance_extreme_keep;
+
+                if (config.strict_rust_mode) {
+                    balance_equal_cp = 200;
+                    balance_moderate_cp = 600;
+                    balance_equal_keep = 100;
+                    balance_moderate_keep = 50;
+                    balance_extreme_keep = 25;
                 }
 
                 while (!finished && ply < MAX_PLIES) {
@@ -659,12 +681,19 @@ void run_datagen(const DatagenConfig& config) {
                     }
 
                     SearchLimits limits;
-                    limits.depth = std::max(1, config.search_depth);
-                    limits.nodes = game_search_nodes;
                     limits.silent = true;
                     limits.seed = rng.next_u64();
                     limits.use_tt_new_search = false;
                     limits.use_global_context = false;
+
+                    // Rust: FixedNodes(50_000)
+                    if (config.search_nodes > 0) {
+                        limits.nodes = game_search_nodes;
+                        limits.depth = 0; // Let nodes drive
+                    } else {
+                        limits.depth = std::max(1, config.search_depth);
+                        limits.nodes = 0;
+                    }
 
                     SearchResult search_result = Search::search(pos, limits, search_context);
                     nodes_total.fetch_add(static_cast<long>(search_context.get_node_count()));
@@ -684,20 +713,29 @@ void run_datagen(const DatagenConfig& config) {
 
                     if (config.adjudicate) {
                         bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
-                        if (depth_ok) {
-                            if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
-                                stable_score_counter += 1;
+                        bool stability_ok = false;
+
+                        if (config.strict_rust_mode) {
+                            // Rust: No stability check, just checks score thresholds
+                            // We assume depth is sufficient due to FixedNodes(50k)
+                            stability_ok = depth_ok;
+                        } else {
+                            // Legacy Stability Logic
+                            if (depth_ok) {
+                                if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
+                                    stable_score_counter += 1;
+                                } else {
+                                    stable_score_counter = 0;
+                                }
+                                last_eval = eval_stm;
+                                has_last_eval = true;
                             } else {
                                 stable_score_counter = 0;
+                                has_last_eval = false;
                             }
-                            last_eval = eval_stm;
-                            has_last_eval = true;
-                        } else {
-                            stable_score_counter = 0;
-                            has_last_eval = false;
+                            stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
                         }
 
-                        bool stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
                         if (stability_ok) {
                             if (std::abs(clamped) >= MERCY_CP) {
                                 mercy_counter += 1;
@@ -733,9 +771,23 @@ void run_datagen(const DatagenConfig& config) {
                                 }
                             }
                         } else {
-                            mercy_counter = 0;
-                            win_counter = 0;
-                            draw_counter = 0;
+                            if (!config.strict_rust_mode) {
+                                mercy_counter = 0;
+                                win_counter = 0;
+                                draw_counter = 0;
+                            } else {
+                                // In strict mode, if depth_ok is false, we might want to reset?
+                                // Rust doesn't check depth so it never resets due to depth.
+                                // But if we miss MIN_ADJUDICATE_DEPTH (e.g. mate found at d1), we should probably not adjudicate based on score unless it's mate.
+                                // Mate scores are handled separately below usually?
+                                // Actually mate scores are clamped in `clamped_eval`.
+                                // Let's stick to safe reset if not deep enough to avoid noise.
+                                if (!depth_ok) {
+                                    mercy_counter = 0;
+                                    win_counter = 0;
+                                    draw_counter = 0;
+                                }
+                            }
                         }
                     }
 
@@ -752,12 +804,12 @@ void run_datagen(const DatagenConfig& config) {
                             || (ply % config.record_every == 0);
                         if (record_due_to_ply || last_move_interesting) {
                             int abs_score = std::abs(clamped);
-                            if (abs_score <= config.balance_equal_cp) {
-                                should_keep = rng.range(0, 100) < config.balance_equal_keep;
-                            } else if (abs_score <= config.balance_moderate_cp) {
-                                should_keep = rng.range(0, 100) < config.balance_moderate_keep;
+                            if (abs_score <= balance_equal_cp) {
+                                should_keep = rng.range(0, 100) < balance_equal_keep;
+                            } else if (abs_score <= balance_moderate_cp) {
+                                should_keep = rng.range(0, 100) < balance_moderate_keep;
                             } else {
-                                should_keep = rng.range(0, 100) < config.balance_extreme_keep;
+                                should_keep = rng.range(0, 100) < balance_extreme_keep;
                             }
                         }
                     }
@@ -766,21 +818,28 @@ void run_datagen(const DatagenConfig& config) {
                         && !recent_positions.contains(pos.key())) {
                         recent_positions.insert(pos.key());
                         DatagenRecord record{};
+
+                        // Rust Compatibility: Write White-Relative Score if strict mode is on
+                        int16_t score_to_write = clamped;
+                        if (config.strict_rust_mode) {
+                             score_to_write = (pos.side_to_move() == WHITE) ? clamped : -clamped;
+                        }
+
                         if (config.output_format == PackedFormat::V1) {
-                            pack_position_v1(pos, clamped, wdl, 0.5f, record.board_v1);
+                            pack_position_v1(pos, score_to_write, wdl, 0.5f, record.board_v1);
                         } else {
                             uint8_t depth = static_cast<uint8_t>(
                                 std::min(255, search_result.depth_reached));
                             uint16_t ply_value = static_cast<uint16_t>(
                                 std::min(65535, ply));
-                            pack_position_v2(pos, clamped, wdl, 0.5f, depth,
+                            pack_position_v2(pos, score_to_write, wdl, 0.5f, depth,
                                 search_result.best_move, ply_value, record.board_v2);
                         }
                         records.push_back(record);
                     }
 
                     uint16_t move = 0;
-                    if (ply < config.opening_random_plies) {
+                    if (ply < opening_plies) {
                         move = pick_random_opening_move(pos, list, rng, seen_positions);
                     } else {
                         move = pick_policy_move(search_result, rng, ply, config);
