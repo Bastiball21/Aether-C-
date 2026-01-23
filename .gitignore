@@ -1,0 +1,5 @@
+trainer/target/
+obj/
+*.exe
+*.o
+*.bin

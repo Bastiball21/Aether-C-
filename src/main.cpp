@@ -208,7 +208,10 @@ int main(int argc, char* argv[]) {
 
             for (; j < argc; ++j) {
                 std::string opt = argv[j];
-                if (opt == "--format" && j + 1 < argc) {
+                if (opt == "--bullet") {
+                    cfg.output_format = PackedFormat::V1;
+                    cfg.strict_rust_mode = true;
+                } else if (opt == "--format" && j + 1 < argc) {
                     auto parsed = parse_packed_format(argv[j + 1]);
                     if (!parsed.has_value()) {
                         std::cerr << "invalid format (expected v1 or v2)\n";
