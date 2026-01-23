@@ -1,4 +1,5 @@
 #include "position.h"
+#include "nnue/feature_transformer.h"
 #include "eval/eval_params.h"
 #include <sstream>
 #include <cstring>
@@ -324,6 +325,12 @@ void Position::set(const std::string& fen) {
     si.eval_phase = eval_phase_acc;
 
     history.push_back(si);
+
+    if (NNUE::g_feature_transformer) {
+        NNUE::g_feature_transformer->refresh_accumulators(nnue_state, *this);
+        // Copy to history so unmake restores it correctly (actually set pushes initial state)
+        history.back().nnue = nnue_state;
+    }
 }
 
 int Position::non_pawn_material(Color c) const {
@@ -355,6 +362,15 @@ void Position::make_move(uint16_t move) {
     si.eval_eg = eval_eg_acc;
     si.eval_phase = eval_phase_acc;
 
+    // Save current NNUE state to history (prev state)
+    si.nnue = nnue_state;
+
+    // Gather updates for NNUE
+    std::vector<NNUE::FeatureUpdate> nnue_updates;
+    if (NNUE::g_feature_transformer) {
+        nnue_updates.reserve(4);
+    }
+
     // Update rule50
     rule50++;
 
@@ -376,6 +392,11 @@ void Position::make_move(uint16_t move) {
         eval_mg_acc -= piece_mg_value(captured_piece, capture_sq);
         eval_eg_acc -= piece_eg_value(captured_piece, capture_sq);
         eval_phase_acc -= Eval::Params.PHASE_WEIGHTS[captured_piece % 6];
+
+        if (NNUE::g_feature_transformer) {
+            nnue_updates.push_back({captured_piece, capture_sq, false});
+        }
+
         remove_piece(capture_sq);
     }
 
@@ -389,11 +410,21 @@ void Position::make_move(uint16_t move) {
         eval_mg_acc += piece_mg_value(promo_piece, to);
         eval_eg_acc += piece_eg_value(promo_piece, to);
         eval_phase_acc += Eval::Params.PHASE_WEIGHTS[promo_pt];
+
+        if (NNUE::g_feature_transformer) {
+            nnue_updates.push_back({p, from, false});
+            nnue_updates.push_back({promo_piece, to, true});
+        }
     } else {
         eval_mg_acc -= piece_mg_value(p, from);
         eval_eg_acc -= piece_eg_value(p, from);
         eval_mg_acc += piece_mg_value(p, to);
         eval_eg_acc += piece_eg_value(p, to);
+
+        if (NNUE::g_feature_transformer) {
+            nnue_updates.push_back({p, from, false});
+            nnue_updates.push_back({p, to, true});
+        }
     }
 
     // Move Piece
@@ -421,6 +452,11 @@ void Position::make_move(uint16_t move) {
         eval_mg_acc += piece_mg_value(rook, rook_to);
         eval_eg_acc += piece_eg_value(rook, rook_to);
         move_piece(rook_from, rook_to);
+
+        if (NNUE::g_feature_transformer) {
+            nnue_updates.push_back({rook, rook_from, false});
+            nnue_updates.push_back({rook, rook_to, true});
+        }
     }
 
     // Update Castling Rights
@@ -456,6 +492,11 @@ void Position::make_move(uint16_t move) {
 
     // Push history
     history.push_back(si);
+
+    if (NNUE::g_feature_transformer) {
+        // Update current NNUE state based on prev (si.nnue) and updates
+        NNUE::g_feature_transformer->update_accumulators(nnue_state, si.nnue, *this, nnue_updates);
+    }
 }
 
 void Position::make_null_move() {
@@ -500,6 +541,7 @@ void Position::unmake_null_move() {
     eval_mg_acc = si.eval_mg;
     eval_eg_acc = si.eval_eg;
     eval_phase_acc = si.eval_phase;
+    nnue_state = si.nnue;
 }
 
 void Position::unmake_move(uint16_t move) {
@@ -554,6 +596,7 @@ void Position::unmake_move(uint16_t move) {
     eval_mg_acc = si.eval_mg;
     eval_eg_acc = si.eval_eg;
     eval_phase_acc = si.eval_phase;
+    nnue_state = si.nnue;
 }
 
 bool Position::is_attacked(Square sq, Color by_side) const {

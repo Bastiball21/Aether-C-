@@ -16,11 +16,12 @@ LDFLAGS = -pthread
 
 SRC_DIR = src
 EVAL_DIR = src/eval
+NNUE_DIR = src/nnue
 SYZYGY_DIR = src/syzygy
 OBJ_DIR = obj
 BIN = Aether-C.exe
 
-SRCS_CXX = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(EVAL_DIR)/*.cpp)
+SRCS_CXX = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(EVAL_DIR)/*.cpp) $(wildcard $(NNUE_DIR)/*.cpp)
 # Only compile tbprobe.c, tbcore.c is included by tbprobe.c
 SRCS_C = $(SYZYGY_DIR)/tbprobe.c
 
@@ -36,6 +37,9 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: $(EVAL_DIR)/%.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/%.o: $(NNUE_DIR)/%.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: $(SYZYGY_DIR)/%.c | $(OBJ_DIR)
