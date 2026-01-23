@@ -340,8 +340,8 @@ int main(int argc, char* argv[]) {
                 std::cerr << "output path is required\n";
                 return 1;
             }
-            if (cfg.search_depth < 1) {
-                std::cerr << "depth must be at least 1\n";
+            if (cfg.search_depth < 1 && cfg.search_nodes <= 0) {
+                std::cerr << "depth must be at least 1 or nodes > 0\n";
                 return 1;
             }
             if (cfg.min_depth < 0) {

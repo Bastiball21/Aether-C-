@@ -521,8 +521,7 @@ void run_datagen(const DatagenConfig& config) {
 
     std::thread status([&] {
         auto start_time = std::chrono::steady_clock::now();
-        while (!done.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+        auto print_status = [&](bool final_nl) {
             long games = games_completed.load();
             long written = games_written.load();
             long nodes = nodes_total.load();
@@ -546,15 +545,26 @@ void run_datagen(const DatagenConfig& config) {
                 eta_stream << eta_secs << "s";
             }
 
-            std::cout << "[Datagen] Games: " << games << "/" << config.num_games
+            std::cout << "\r[Datagen] Games: " << games << "/" << config.num_games
                       << " | Written: " << written
                       << " | Nodes: " << format_count(nodes)
                       << " | NPS: " << format_count(nps)
                       << " | FPS: " << static_cast<long>(pps)
+                      << " | GPS: " << std::fixed << std::setprecision(2) << gps
                       << " | ETA: " << eta_stream.str()
                       << " | Dups: " << dups
-                      << "\n";
+                      << "        " << std::flush;
+
+            if (final_nl) {
+                std::cout << "\n";
+            }
+        };
+
+        while (!done.load()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            print_status(false);
         }
+        print_status(true);
     });
 
     std::vector<std::thread> workers;
