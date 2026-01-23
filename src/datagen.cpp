@@ -348,7 +348,7 @@ uint16_t pick_softmax_move(const std::vector<SearchResult::RootScore>& scores, R
     weights.reserve(top_n);
     double total = 0.0;
     for (size_t i = 0; i < top_n; ++i) {
-        double w = std::exp((scores[i].score - max_score) / temp);
+        double w = std::exp((scores[i].score - max_score) / (temp * 100.0));
         weights.push_back(w);
         total += w;
     }
@@ -629,20 +629,12 @@ void run_datagen(const DatagenConfig& config) {
                     }
                 }
 
-                // Filtering thresholds (Override if strict mode)
+                // Filtering thresholds
                 int balance_equal_cp = config.balance_equal_cp;
                 int balance_moderate_cp = config.balance_moderate_cp;
                 int balance_equal_keep = config.balance_equal_keep;
                 int balance_moderate_keep = config.balance_moderate_keep;
                 int balance_extreme_keep = config.balance_extreme_keep;
-
-                if (config.strict_rust_mode) {
-                    balance_equal_cp = 200;
-                    balance_moderate_cp = 600;
-                    balance_equal_keep = 100;
-                    balance_moderate_keep = 50;
-                    balance_extreme_keep = 25;
-                }
 
                 while (!finished && ply < MAX_PLIES) {
                     if (pos.rule50_count() >= 100 || repetition_counts[pos.key()] >= 3) {

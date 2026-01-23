@@ -37,7 +37,7 @@ struct DatagenConfig {
     size_t writer_lru_size = 0;
     PackedFormat output_format = PackedFormat::V2;
     bool adjudicate = true;
-    bool strict_rust_mode = true; // Enable Rust-alignment by default
+    bool strict_rust_mode = false; // Enable Rust-alignment by default
 };
 
 void run_datagen(const DatagenConfig& config);
