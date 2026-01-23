@@ -8,6 +8,12 @@
 
 namespace Eval {
 
+    bool GlobalUseNNUE = true;
+
+    void set_use_nnue(bool use) {
+        GlobalUseNNUE = use;
+    }
+
     void init_nnue(const std::string& arch, const std::string& file) {
         if (NNUE::g_network) {
             delete NNUE::g_network;
@@ -928,7 +934,7 @@ namespace Eval {
     }
 
     int evaluate(const Position& pos, int alpha, int beta) {
-        if (NNUE::g_network) {
+        if (GlobalUseNNUE && NNUE::g_network) {
              return NNUE::g_network->evaluate(pos, pos.nnue());
         }
         return evaluate_hce(pos, alpha, beta);
