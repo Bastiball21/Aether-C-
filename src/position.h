@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "bitboard.h"
+#include "nnue/accumulator.h"
 #include <string>
 #include <vector>
 
@@ -22,6 +23,9 @@ public:
         int eval_mg;
         int eval_eg;
         int eval_phase;
+
+        // NNUE
+        NNUE::NNUEState nnue;
     };
 
     Position();
@@ -50,6 +54,9 @@ public:
     int eval_mg() const { return eval_mg_acc; }
     int eval_eg() const { return eval_eg_acc; }
     int eval_phase() const { return eval_phase_acc; }
+
+    // NNUE State
+    const NNUE::NNUEState& nnue() const { return nnue_state; }
 
     // Material Helper
     int non_pawn_material(Color c) const;
@@ -101,6 +108,9 @@ private:
     int eval_mg_acc;
     int eval_eg_acc;
     int eval_phase_acc;
+
+    // Current NNUE State
+    NNUE::NNUEState nnue_state;
 
     std::vector<StateInfo> history;
 };

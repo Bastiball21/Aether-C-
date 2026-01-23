@@ -15,6 +15,7 @@
 #include "datagen.h"
 #include "packed_board_io.h"
 #include "syzygy.h"
+#include "nnue/network.h"
 
 // Parse move string to uint16_t
 uint16_t parse_move(const Position& pos, const std::string& str) {
@@ -82,6 +83,9 @@ bool OptProbCut = true;
 bool OptSingularExt = true;
 bool OptUseHistory = true;
 bool OptLargePages = false;
+bool OptUseNNUE = true;
+std::string OptNNUEArch = "classic";
+std::string OptNNUEFile = "";
 
 void join_search() {
     Search::stop();
@@ -425,6 +429,9 @@ int main(int argc, char* argv[]) {
             std::cout << "option name SingularExt type check default true\n";
             std::cout << "option name UseHistory type check default true\n";
             std::cout << "option name LargePages type check default false\n";
+            std::cout << "option name Use NNUE type check default true\n";
+            std::cout << "option name nnue_arch type string default classic\n";
+            std::cout << "option name nnue_file type string default <empty>\n";
             std::cout << "uciok\n" << std::flush;
         } else if (token == "isready") {
             std::cout << "readyok\n" << std::flush;
@@ -477,6 +484,15 @@ int main(int argc, char* argv[]) {
                         join_search();
                         TTable.set_large_pages(OptLargePages);
                         TTable.resize(OptHash);
+                    } else if (name == "Use NNUE") {
+                        OptUseNNUE = (value == "true");
+                        Eval::set_use_nnue(OptUseNNUE);
+                    } else if (name == "nnue_arch") {
+                        OptNNUEArch = value;
+                        Eval::init_nnue(OptNNUEArch, OptNNUEFile);
+                    } else if (name == "nnue_file") {
+                        OptNNUEFile = value;
+                        Eval::init_nnue(OptNNUEArch, OptNNUEFile);
                     }
                 }
             }
@@ -595,6 +611,14 @@ int main(int argc, char* argv[]) {
              } else {
                  std::cout << "Usage: tuneepd <input.epd> <output.csv>\n";
              }
+        } else if (token == "debug_nnue") {
+            if (NNUE::g_network) {
+                NNUE::g_network->debug(pos, pos.nnue());
+            } else {
+                std::cout << "NNUE not loaded\n";
+            }
+        } else if (token == "test_nnue") {
+            NNUE::Network::test();
         }
     }
 

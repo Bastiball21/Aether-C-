@@ -1,11 +1,38 @@
 #include "eval.h"
 #include "eval_params.h"
+#include "../nnue/network.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
 
 namespace Eval {
+
+    bool GlobalUseNNUE = true;
+
+    void set_use_nnue(bool use) {
+        GlobalUseNNUE = use;
+    }
+
+    void init_nnue(const std::string& arch, const std::string& file) {
+        if (NNUE::g_network) {
+            delete NNUE::g_network;
+            NNUE::g_network = nullptr;
+            NNUE::g_feature_transformer = nullptr;
+        }
+
+        if (arch == "aethersprout768") {
+            NNUE::g_network = new NNUE::Network();
+            if (NNUE::g_network->load(file)) {
+                NNUE::g_feature_transformer = NNUE::g_network;
+                std::cout << "info string NNUE loaded: " << file << std::endl;
+            } else {
+                std::cout << "info string NNUE load failed: " << file << std::endl;
+                delete NNUE::g_network;
+                NNUE::g_network = nullptr;
+            }
+        }
+    }
 
     // Global Contempt Setting
     int GlobalContempt = 0;
@@ -907,6 +934,9 @@ namespace Eval {
     }
 
     int evaluate(const Position& pos, int alpha, int beta) {
+        if (GlobalUseNNUE && NNUE::g_network) {
+             return NNUE::g_network->evaluate(pos, pos.nnue());
+        }
         return evaluate_hce(pos, alpha, beta);
     }
 
