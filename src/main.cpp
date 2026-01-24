@@ -392,7 +392,15 @@ int main(int argc, char* argv[]) {
                 Syzygy::set_path(syzygy_path);
             }
 
-            run_datagen(cfg);
+            try {
+                run_datagen(cfg);
+            } catch (const std::exception& e) {
+                std::cerr << "Datagen exception: " << e.what() << std::endl;
+                return 1;
+            } catch (...) {
+                std::cerr << "Datagen exception: unknown" << std::endl;
+                return 1;
+            }
             return 0;
         }
         if ((arg == "--weights" || arg == "-w") && i + 1 < argc) {
