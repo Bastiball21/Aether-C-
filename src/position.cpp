@@ -1,6 +1,7 @@
 #include "position.h"
 #include "nnue/feature_transformer.h"
 #include "eval/eval_params.h"
+#include <iostream>
 #include <sstream>
 #include <cstring>
 #include <cassert>
@@ -90,6 +91,10 @@ void Position::set_startpos() {
 }
 
 void Position::put_piece(Piece p, Square s) {
+    if (s < 0 || s >= 64) {
+        std::cerr << "CRITICAL: Invalid square " << s << " in put_piece" << std::endl;
+        return;
+    }
 #ifndef NDEBUG
     assert(s >= 0 && s < 64);
 #endif
@@ -105,6 +110,10 @@ void Position::put_piece(Piece p, Square s) {
 }
 
 void Position::remove_piece(Square s) {
+    if (s < 0 || s >= 64) {
+        std::cerr << "CRITICAL: Invalid square " << s << " in remove_piece" << std::endl;
+        return;
+    }
 #ifndef NDEBUG
     assert(s >= 0 && s < 64);
 #endif
