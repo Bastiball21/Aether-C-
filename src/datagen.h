@@ -26,7 +26,7 @@ struct DatagenConfig {
     bool use_epsilon_greedy = false;
     int min_depth = 0;
     int64_t min_nodes = 0;
-    int record_every = 1;
+    int record_every = 4;
     int balance_equal_cp = 200;
     int balance_moderate_cp = 600;
     int balance_equal_keep = 100;

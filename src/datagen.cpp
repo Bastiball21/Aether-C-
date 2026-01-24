@@ -33,11 +33,11 @@
 namespace {
 
 // Rust-aligned constants
-constexpr int MERCY_CP = 1000;
+constexpr int MERCY_CP = 600;
 constexpr int MERCY_PLIES = 8;
-constexpr int WIN_CP = 700;
+constexpr int WIN_CP = 450;
 constexpr int WIN_STABLE_PLIES = 6;
-constexpr int DRAW_CP = 50;
+constexpr int DRAW_CP = 40;
 constexpr int DRAW_PLIES = 20;
 constexpr int DRAW_START_PLY = 30;
 constexpr int MIN_ADJUDICATE_DEPTH = 10;
@@ -279,6 +279,8 @@ OpeningBook load_epd_book(const std::string& path) {
         std::string fen = p1 + " " + p2 + " " + p3 + " " + p4;
         book.fens.push_back(fen);
     }
+
+    book.fens.shrink_to_fit();
 
     return book;
 }

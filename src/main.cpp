@@ -212,7 +212,11 @@ int main(int argc, char* argv[]) {
 
             for (; j < argc; ++j) {
                 std::string opt = argv[j];
-                if (opt == "--bullet") {
+                if (opt == "--hash" && j + 1 < argc) {
+                    int hash_size = std::stoi(argv[j + 1]);
+                    TTable.resize(hash_size);
+                    j += 1;
+                } else if (opt == "--bullet") {
                     cfg.output_format = PackedFormat::V1;
                     cfg.strict_rust_mode = true;
                 } else if (opt == "--format" && j + 1 < argc) {
