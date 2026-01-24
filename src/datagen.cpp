@@ -648,227 +648,234 @@ void run_datagen(const DatagenConfig& config) {
                 int balance_moderate_keep = config.balance_moderate_keep;
                 int balance_extreme_keep = config.balance_extreme_keep;
 
-                while (!finished && ply < MAX_PLIES) {
-                    if (pos.rule50_count() >= 100 || repetition_counts[pos.key()] >= 3) {
-                        result = 0.5f;
-                        break;
-                    }
+                try {
+                    while (!finished && ply < MAX_PLIES) {
+                        if (pos.rule50_count() >= 100 || repetition_counts[pos.key()] >= 3) {
+                            result = 0.5f;
+                            break;
+                        }
 
-                    if (is_trivial_endgame(pos)) {
-                        result = 0.5f;
-                        break;
-                    }
+                        if (is_trivial_endgame(pos)) {
+                            result = 0.5f;
+                            break;
+                        }
 
-                    if (Syzygy::enabled() && Bitboards::count(pos.pieces()) <= 7) {
-                        int tb_score = 0;
-                        if (Syzygy::probe_wdl(pos, tb_score, 0)) {
-                            if (tb_score > 0) {
-                                result = (pos.side_to_move() == WHITE) ? 1.0f : 0.0f;
-                            } else if (tb_score < 0) {
+                        if (Syzygy::enabled() && Bitboards::count(pos.pieces()) <= 7) {
+                            int tb_score = 0;
+                            if (Syzygy::probe_wdl(pos, tb_score, 0)) {
+                                if (tb_score > 0) {
+                                    result = (pos.side_to_move() == WHITE) ? 1.0f : 0.0f;
+                                } else if (tb_score < 0) {
+                                    result = (pos.side_to_move() == WHITE) ? 0.0f : 1.0f;
+                                } else {
+                                    result = 0.5f;
+                                }
+                                break;
+                            }
+                        }
+
+                        MoveGen::MoveList list;
+                        MoveGen::generate_all(pos, list);
+                        if (list.count == 0) {
+                            if (pos.in_check()) {
                                 result = (pos.side_to_move() == WHITE) ? 0.0f : 1.0f;
                             } else {
                                 result = 0.5f;
                             }
                             break;
                         }
-                    }
 
-                    MoveGen::MoveList list;
-                    MoveGen::generate_all(pos, list);
-                    if (list.count == 0) {
-                        if (pos.in_check()) {
-                            result = (pos.side_to_move() == WHITE) ? 0.0f : 1.0f;
+                        SearchLimits limits;
+                        limits.silent = true;
+                        limits.seed = rng.next_u64();
+                        limits.use_tt_new_search = false;
+                        limits.use_global_context = false;
+
+                        // Rust: FixedNodes(50_000)
+                        if (config.search_nodes > 0) {
+                            limits.nodes = game_search_nodes;
+                            limits.depth = 0; // Let nodes drive
                         } else {
-                            result = 0.5f;
+                            limits.depth = std::max(1, config.search_depth);
+                            limits.nodes = 0;
                         }
-                        break;
-                    }
 
-                    SearchLimits limits;
-                    limits.silent = true;
-                    limits.seed = rng.next_u64();
-                    limits.use_tt_new_search = false;
-                    limits.use_global_context = false;
+                        SearchResult search_result = Search::search(pos, limits, search_context);
+                        nodes_total.fetch_add(static_cast<long>(search_context.get_node_count()));
+                        int64_t search_nodes = search_context.get_node_count();
 
-                    // Rust: FixedNodes(50_000)
-                    if (config.search_nodes > 0) {
-                        limits.nodes = game_search_nodes;
-                        limits.depth = 0; // Let nodes drive
-                    } else {
-                        limits.depth = std::max(1, config.search_depth);
-                        limits.nodes = 0;
-                    }
+                        int eval_stm = search_result.best_score_cp;
+                        int clamped_eval = EvalUtil::clamp_score_cp(
+                            eval_stm, 2000, MATE_THRESHOLD, 2000);
+                        int16_t clamped = static_cast<int16_t>(clamped_eval);
+                        uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
+                        bool gap_skip = false;
+                        if (config.gap_skip_cp > 0 && search_result.root_scores.size() >= 2) {
+                            int gap_cp = std::abs(search_result.root_scores[0].score
+                                - search_result.root_scores[1].score);
+                            gap_skip = gap_cp > config.gap_skip_cp;
+                        }
 
-                    SearchResult search_result = Search::search(pos, limits, search_context);
-                    nodes_total.fetch_add(static_cast<long>(search_context.get_node_count()));
-                    int64_t search_nodes = search_context.get_node_count();
+                        if (config.adjudicate) {
+                            bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
+                            bool stability_ok = false;
 
-                    int eval_stm = search_result.best_score_cp;
-                    int clamped_eval = EvalUtil::clamp_score_cp(
-                        eval_stm, 2000, MATE_THRESHOLD, 2000);
-                    int16_t clamped = static_cast<int16_t>(clamped_eval);
-                    uint8_t wdl = EvalUtil::wdl_from_cp(clamped, EvalUtil::kDefaultWdlParams);
-                    bool gap_skip = false;
-                    if (config.gap_skip_cp > 0 && search_result.root_scores.size() >= 2) {
-                        int gap_cp = std::abs(search_result.root_scores[0].score
-                            - search_result.root_scores[1].score);
-                        gap_skip = gap_cp > config.gap_skip_cp;
-                    }
-
-                    if (config.adjudicate) {
-                        bool depth_ok = search_result.depth_reached >= MIN_ADJUDICATE_DEPTH;
-                        bool stability_ok = false;
-
-                        if (config.strict_rust_mode) {
-                            // Rust: No stability check, just checks score thresholds
-                            // We assume depth is sufficient due to FixedNodes(50k)
-                            stability_ok = depth_ok;
-                        } else {
-                            // Legacy Stability Logic
-                            if (depth_ok) {
-                                if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
-                                    stable_score_counter += 1;
+                            if (config.strict_rust_mode) {
+                                // Rust: No stability check, just checks score thresholds
+                                // We assume depth is sufficient due to FixedNodes(50k)
+                                stability_ok = depth_ok;
+                            } else {
+                                // Legacy Stability Logic
+                                if (depth_ok) {
+                                    if (has_last_eval && std::abs(eval_stm - last_eval) <= STABLE_SCORE_DELTA) {
+                                        stable_score_counter += 1;
+                                    } else {
+                                        stable_score_counter = 0;
+                                    }
+                                    last_eval = eval_stm;
+                                    has_last_eval = true;
                                 } else {
                                     stable_score_counter = 0;
+                                    has_last_eval = false;
                                 }
-                                last_eval = eval_stm;
-                                has_last_eval = true;
-                            } else {
-                                stable_score_counter = 0;
-                                has_last_eval = false;
-                            }
-                            stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
-                        }
-
-                        if (stability_ok) {
-                            if (std::abs(clamped) >= MERCY_CP) {
-                                mercy_counter += 1;
-                            } else {
-                                mercy_counter = 0;
-                            }
-                            if (mercy_counter >= MERCY_PLIES) {
-                                result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
-                                                      : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
-                                break;
+                                stability_ok = depth_ok && stable_score_counter >= STABLE_SCORE_PLIES;
                             }
 
-                            if (std::abs(clamped) >= WIN_CP) {
-                                win_counter += 1;
-                            } else {
-                                win_counter = 0;
-                            }
-                            if (win_counter >= WIN_STABLE_PLIES) {
-                                result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
-                                                      : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
-                                break;
-                            }
-
-                            if (ply >= DRAW_START_PLY) {
-                                if (std::abs(clamped) <= DRAW_CP) {
-                                    draw_counter += 1;
+                            if (stability_ok) {
+                                if (std::abs(clamped) >= MERCY_CP) {
+                                    mercy_counter += 1;
                                 } else {
-                                    draw_counter = 0;
+                                    mercy_counter = 0;
                                 }
-                                if (draw_counter >= DRAW_PLIES) {
-                                    result = 0.5f;
+                                if (mercy_counter >= MERCY_PLIES) {
+                                    result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
+                                                          : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
                                     break;
                                 }
-                            }
-                        } else {
-                            if (!config.strict_rust_mode) {
-                                mercy_counter = 0;
-                                win_counter = 0;
-                                draw_counter = 0;
+
+                                if (std::abs(clamped) >= WIN_CP) {
+                                    win_counter += 1;
+                                } else {
+                                    win_counter = 0;
+                                }
+                                if (win_counter >= WIN_STABLE_PLIES) {
+                                    result = eval_stm > 0 ? (pos.side_to_move() == WHITE ? 1.0f : 0.0f)
+                                                          : (pos.side_to_move() == WHITE ? 0.0f : 1.0f);
+                                    break;
+                                }
+
+                                if (ply >= DRAW_START_PLY) {
+                                    if (std::abs(clamped) <= DRAW_CP) {
+                                        draw_counter += 1;
+                                    } else {
+                                        draw_counter = 0;
+                                    }
+                                    if (draw_counter >= DRAW_PLIES) {
+                                        result = 0.5f;
+                                        break;
+                                    }
+                                }
                             } else {
-                                // In strict mode, if depth_ok is false, we might want to reset?
-                                // Rust doesn't check depth so it never resets due to depth.
-                                // But if we miss MIN_ADJUDICATE_DEPTH (e.g. mate found at d1), we should probably not adjudicate based on score unless it's mate.
-                                // Mate scores are handled separately below usually?
-                                // Actually mate scores are clamped in `clamped_eval`.
-                                // Let's stick to safe reset if not deep enough to avoid noise.
-                                if (!depth_ok) {
+                                if (!config.strict_rust_mode) {
                                     mercy_counter = 0;
                                     win_counter = 0;
                                     draw_counter = 0;
+                                } else {
+                                    // In strict mode, if depth_ok is false, we might want to reset?
+                                    // Rust doesn't check depth so it never resets due to depth.
+                                    // But if we miss MIN_ADJUDICATE_DEPTH (e.g. mate found at d1), we should probably not adjudicate based on score unless it's mate.
+                                    // Mate scores are handled separately below usually?
+                                    // Actually mate scores are clamped in `clamped_eval`.
+                                    // Let's stick to safe reset if not deep enough to avoid noise.
+                                    if (!depth_ok) {
+                                        mercy_counter = 0;
+                                        win_counter = 0;
+                                        draw_counter = 0;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    bool depth_or_nodes_ok = true;
-                    if (config.min_depth > 0 || config.min_nodes > 0) {
-                        depth_or_nodes_ok = (search_result.depth_reached >= config.min_depth)
-                            || (search_nodes >= config.min_nodes);
-                    }
+                        bool depth_or_nodes_ok = true;
+                        if (config.min_depth > 0 || config.min_nodes > 0) {
+                            depth_or_nodes_ok = (search_result.depth_reached >= config.min_depth)
+                                || (search_nodes >= config.min_nodes);
+                        }
 
-                    bool pv_ok = search_result.pv_length > 0;
-                    bool should_keep = false;
-                    if (ply >= OPENING_SKIP_PLIES) {
-                        bool record_due_to_ply = config.record_every <= 1
-                            || (ply % config.record_every == 0);
-                        if (record_due_to_ply || last_move_interesting) {
-                            int abs_score = std::abs(clamped);
-                            if (abs_score <= balance_equal_cp) {
-                                should_keep = rng.range(0, 100) < balance_equal_keep;
-                            } else if (abs_score <= balance_moderate_cp) {
-                                should_keep = rng.range(0, 100) < balance_moderate_keep;
-                            } else {
-                                should_keep = rng.range(0, 100) < balance_extreme_keep;
+                        bool pv_ok = search_result.pv_length > 0;
+                        bool should_keep = false;
+                        if (ply >= OPENING_SKIP_PLIES) {
+                            bool record_due_to_ply = config.record_every <= 1
+                                || (ply % config.record_every == 0);
+                            if (record_due_to_ply || last_move_interesting) {
+                                int abs_score = std::abs(clamped);
+                                if (abs_score <= balance_equal_cp) {
+                                    should_keep = rng.range(0, 100) < balance_equal_keep;
+                                } else if (abs_score <= balance_moderate_cp) {
+                                    should_keep = rng.range(0, 100) < balance_moderate_keep;
+                                } else {
+                                    should_keep = rng.range(0, 100) < balance_extreme_keep;
+                                }
                             }
                         }
-                    }
 
-                    if (should_keep && depth_or_nodes_ok && pv_ok && !gap_skip
-                        && !recent_positions.contains(pos.key())) {
-                        recent_positions.insert(pos.key());
-                        DatagenRecord record{};
+                        if (should_keep && depth_or_nodes_ok && pv_ok && !gap_skip
+                            && !recent_positions.contains(pos.key())) {
+                            recent_positions.insert(pos.key());
+                            DatagenRecord record{};
 
-                        // Rust Compatibility: Write White-Relative Score if strict mode is on
-                        int16_t score_to_write = clamped;
-                        if (config.strict_rust_mode) {
-                             score_to_write = (pos.side_to_move() == WHITE) ? clamped : -clamped;
+                            // Rust Compatibility: Write White-Relative Score if strict mode is on
+                            int16_t score_to_write = clamped;
+                            if (config.strict_rust_mode) {
+                                 score_to_write = (pos.side_to_move() == WHITE) ? clamped : -clamped;
+                            }
+
+                            if (config.output_format == PackedFormat::V1) {
+                                pack_position_v1(pos, score_to_write, wdl, 0.5f, record.board_v1);
+                            } else {
+                                uint8_t depth = static_cast<uint8_t>(
+                                    std::min(255, search_result.depth_reached));
+                                uint16_t ply_value = static_cast<uint16_t>(
+                                    std::min(65535, ply));
+                                pack_position_v2(pos, score_to_write, wdl, 0.5f, depth,
+                                    search_result.best_move, ply_value, record.board_v2);
+                            }
+                            records.push_back(record);
                         }
 
-                        if (config.output_format == PackedFormat::V1) {
-                            pack_position_v1(pos, score_to_write, wdl, 0.5f, record.board_v1);
+                        uint16_t move = 0;
+                        if (ply < opening_plies) {
+                            move = pick_random_opening_move(pos, list, rng, seen_positions);
                         } else {
-                            uint8_t depth = static_cast<uint8_t>(
-                                std::min(255, search_result.depth_reached));
-                            uint16_t ply_value = static_cast<uint16_t>(
-                                std::min(65535, ply));
-                            pack_position_v2(pos, score_to_write, wdl, 0.5f, depth,
-                                search_result.best_move, ply_value, record.board_v2);
+                            move = pick_policy_move(search_result, rng, ply, config);
                         }
-                        records.push_back(record);
+
+                        if (move == 0) {
+                            move = search_result.best_move;
+                        }
+                        if (move == 0) {
+                            break;
+                        }
+
+                        Square move_from = static_cast<Square>((move >> 6) & 0x3F);
+                        int move_flag = move >> 12;
+                        bool is_capture = (move_flag & 4) || (move_flag == 5);
+                        bool is_pawn_push = pos.piece_on(move_from) % 6 == PAWN;
+
+                        rolling_hash = rng.splitmix(rolling_hash ^ pos.key() ^ move);
+                        pos.make_move(move);
+                        bool gives_check = pos.in_check();
+                        last_move_interesting = is_capture || is_pawn_push || gives_check;
+                        seen_positions.insert(pos.key());
+                        repetition_counts[pos.key()] += 1;
+
+                        ply += 1;
                     }
-
-                    uint16_t move = 0;
-                    if (ply < opening_plies) {
-                        move = pick_random_opening_move(pos, list, rng, seen_positions);
-                    } else {
-                        move = pick_policy_move(search_result, rng, ply, config);
-                    }
-
-                    if (move == 0) {
-                        move = search_result.best_move;
-                    }
-                    if (move == 0) {
-                        break;
-                    }
-
-                    Square move_from = static_cast<Square>((move >> 6) & 0x3F);
-                    int move_flag = move >> 12;
-                    bool is_capture = (move_flag & 4) || (move_flag == 5);
-                    bool is_pawn_push = pos.piece_on(move_from) % 6 == PAWN;
-
-                    rolling_hash = rng.splitmix(rolling_hash ^ pos.key() ^ move);
-                    pos.make_move(move);
-                    bool gives_check = pos.in_check();
-                    last_move_interesting = is_capture || is_pawn_push || gives_check;
-                    seen_positions.insert(pos.key());
-                    repetition_counts[pos.key()] += 1;
-
-                    ply += 1;
+                } catch (const std::exception& e) {
+                    std::cerr << "CRASH DETECTED at FEN: " << pos.fen() << std::endl;
+                    std::cerr << "Exception: " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "CRASH DETECTED at FEN: " << pos.fen() << std::endl;
                 }
 
                 if (!records.empty()) {
