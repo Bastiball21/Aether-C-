@@ -72,7 +72,7 @@ uint16_t parse_move(const Position& pos, const std::string& str) {
 std::thread search_thread;
 
 // UCI Options
-int OptHash = 256;
+int OptHash = 1024;
 int OptThreads = 1;
 int OptMoveOverhead = 10;
 int OptContempt = 0;
@@ -418,7 +418,7 @@ int main(int argc, char* argv[]) {
         if (token == "uci") {
             std::cout << "id name Aether-C 1.0.0\n";
             std::cout << "id author Basti Dangca\n";
-            std::cout << "option name Hash type spin default 256 min 1 max 65536\n";
+            std::cout << "option name Hash type spin default 1024 min 1 max 65536\n";
             std::cout << "option name Threads type spin default 1 min 1 max 64\n";
             std::cout << "option name MoveOverhead type spin default 10 min 0 max 5000\n";
             std::cout << "option name Contempt type spin default 0 min -200 max 200\n";
