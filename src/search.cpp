@@ -39,10 +39,14 @@ long long SearchContext::get_node_count() const {
 void SearchContext::init_lmr() {
     for (int d = 0; d < 64; d++) {
         for (int m = 0; m < 64; m++) {
-            if (d < 3 || m < 2) lmr_table[d][m] = 0;
-            else {
-                // Tuned LMR formula
-                lmr_table[d][m] = (int)(SearchParams::LMR_BASE + log(d) * log(m) / SearchParams::LMR_DIVISOR);
+            if (d < 1 || m < 1) {
+                quiet_lmr[d][m] = 0;
+                noisy_lmr[d][m] = 0;
+            } else {
+                double ld = std::log(d);
+                double lm = std::log(1.2 * m);
+                quiet_lmr[d][m] = (int)(0.8 + ld * lm / 2.5);
+                noisy_lmr[d][m] = (int)(ld * lm / 3.5);
             }
         }
     }
@@ -408,14 +412,16 @@ void SearchWorker::check_limits(SearchContext& search_context) {
     if (search_context.hard_time_limit > 0 || search_context.soft_time_limit > 0) {
         auto now = steady_clock::now();
         long long ms = duration_cast<milliseconds>(now - search_context.start_time).count();
+
+        // Zahak: Stop at 2x Soft Limit
+        if (search_context.soft_time_limit > 0 && ms >= 2 * search_context.soft_time_limit) {
+             search_context.stop_flag = true;
+             return;
+        }
+
         if (search_context.hard_time_limit > 0 && ms >= search_context.hard_time_limit) {
             search_context.stop_flag = true;
             return;
-        }
-        if (search_context.soft_time_limit > 0 && ms >= search_context.soft_time_limit) {
-            if (!search_context.unstable_iteration.load(std::memory_order_relaxed)) {
-                search_context.stop_flag = true;
-            }
         }
     }
 }
@@ -631,60 +637,78 @@ int SearchWorker::negamax(SearchContext& search_context, Position& pos, int dept
         }
     }
 
-    // IID (Internal Iterative Deepening)
-    if (depth >= 5 && tt_move == 0 && is_pv) {
-        // Reduced depth search to find a move
-        negamax(search_context, pos, depth - 2, alpha, beta, ply, false, prev_move, 0);
-        if (TTable.probe(pos.key(), tte)) {
-            tt_move = tte.move;
-            tt_hit = true;
-        }
+    // Internal Iterative Reduction (Zahak)
+    if (depth >= 5 && !tt_hit) {
+        depth -= 1;
     }
 
     int static_eval = Eval::evaluate(pos);
+    static_evals[ply] = static_eval;
+    bool improving = (ply > 2 && static_evals[ply] > static_evals[ply - 2]);
+    if (prev_move == 0) improving = true; // Root or Null Move recovery?
+
+    // Threat Pruning (Zahak)
+    if (!is_pv && !in_check && depth == 1 && static_eval > beta + SearchParams::TP_MARGIN &&
+        (!pos.has_threats(~pos.side_to_move()) || pos.has_threats(pos.side_to_move()))) {
+        return beta;
+    }
 
     // Singular Extensions
     int singular_ext = 0;
-    // Modified: removed !is_pv to allow SE in PV nodes
-    if (limits.use_singular && depth >= 8 && tt_move != 0 && tte.bound() == 3 && tte.depth >= depth - 3 && excluded_move == 0) {
+    if (limits.use_singular && depth >= 8 && tt_move != 0 && tte.bound() == 3 && tte.depth >= depth - 3 && excluded_move == 0 && std::abs(score_from_tt(tte.score, ply)) < MATE_SCORE) {
         int tt_score = score_from_tt(tte.score, ply);
-        int margin = SearchParams::SINGULAR_MARGIN * depth;
+        // Zahak: threshold := max16(nEval-3*int16(depthLeft)/2, -CHECKMATE_EVAL)
+        // Aether uses SINGULAR_MARGIN = 2. Zahak uses 1.5. I'll use 3*depth/2 as Zahak does.
+        int margin = 3 * depth / 2;
         int singular_beta = tt_score - margin;
+
+        // Multi-Cut
+        if (singular_beta >= beta) {
+             return beta;
+        }
+
         int score = negamax(search_context, pos, (depth - 1) / 2, singular_beta - 1, singular_beta, ply, false, prev_move, tt_move);
+
         if (score < singular_beta) {
              singular_ext = 1;
+        } else if (score >= beta) {
+            // Multi-Cut: if score >= beta, research with beta
+             score = negamax(search_context, pos, (depth + 3) / 2, beta - 1, beta, ply, false, prev_move, tt_move);
+             if (score >= beta) return beta;
         }
     }
 
     // Pruning (Non-PV)
     if (!is_pv && !in_check) {
         // Reverse Futility (Static Null Move)
-        if (depth <= 7 && static_eval - SearchParams::RFP_MARGIN * depth >= beta) return static_eval;
+        // Zahak: if improving { margin -= RFPMargin }
+        int rfp_margin = SearchParams::RFP_MARGIN * depth;
+        // Logic for improving needs to be robust.
+        // For now, standard RFP
+        if (depth <= 8 && static_eval - rfp_margin >= beta) return static_eval - rfp_margin; // Fail soft
 
         // Null Move Pruning
-        if (limits.use_nmp && null_allowed && depth >= SearchParams::NMP_DEPTH_LIMIT && static_eval >= beta && pos.non_pawn_material(pos.side_to_move()) >= 300) {
-            int R = SearchParams::NMP_BASE_REDUCTION + depth / SearchParams::NMP_DIVISOR;
+        if (limits.use_nmp && null_allowed && depth >= SearchParams::NMP_DEPTH_LIMIT && static_eval > beta && pos.non_pawn_material(pos.side_to_move()) >= 300) {
+            // Zahak: R = 4 + min(depth/4, 3). If eval >= beta+100 R+=1.
+            int R = 4 + std::min(depth / 4, 3);
+            if (static_eval >= beta + 100) R += 1;
+            R = std::min(R, depth);
+
             pos.make_null_move();
             int score = -negamax(search_context, pos, depth - R, -beta, -beta + 1, ply + 1, false, 0, 0);
             pos.unmake_null_move();
             if (search_context.stop_flag) return 0;
             if (score >= beta) {
-                // Modified: Verification search for deep null moves
-                if (depth >= 12 && score < MATE_SCORE - MAX_PLY) {
-                    score = -negamax(search_context, pos, depth - R, -beta, -beta + 1, ply, false, prev_move, 0);
-                    if (score < beta) goto skip_nmp;
-                }
                 return beta;
             }
         }
     }
-    skip_nmp:
 
-        // Razoring (depth <= 2)
-        if (depth <= 2 && static_eval + SearchParams::RAZORING_MARGIN < alpha) {
-             int qscore = quiescence(search_context, pos, alpha, beta, ply);
-             if (qscore < alpha) return alpha;
-        }
+    // Razoring (depth <= 2)
+    if (!is_pv && !in_check && depth <= 2 && static_eval + SearchParams::RAZORING_MARGIN <= alpha) {
+            int qscore = quiescence(search_context, pos, alpha, beta, ply);
+            return qscore; // Zahak returns qscore, not alpha check
+    }
 
 
     MovePicker mp(pos, *this, tt_move, ply, prev_move);
@@ -759,14 +783,24 @@ int SearchWorker::negamax(SearchContext& search_context, Position& pos, int dept
             // LMR
             int reduction = 0;
             // Modified: Don't reduce if move gives check
-            if (depth >= 3 && moves_searched > 1 && !in_check && is_quiet && !gives_check) {
+            if (depth >= 3 && moves_searched > 1 && !in_check && !gives_check) {
                 int d = std::min(depth, 63);
                 int m = std::min(moves_searched, 63);
-                reduction = search_context.lmr_table[d][m];
+
+                if (is_quiet) {
+                    reduction = search_context.quiet_lmr[d][m];
+                    // History adjustment
+                    if (history_norm > 0.75) reduction -= 1;
+                    else if (history_norm < 0.25) reduction += 1;
+                } else {
+                    reduction = search_context.noisy_lmr[d][m];
+                    // Zahak has capture margin check here, skipping for now or assumed covered by noisy curve
+                }
+
                 if (is_killer) reduction -= 1;
                 if (!is_pv) reduction += 1;
-                if (history_norm > 0.75) reduction -= 1;
-                else if (history_norm < 0.25) reduction += 1;
+                if (improving) reduction -= 1;
+
                 int max_reduction = std::min(depth - 1, 6);
                 reduction = std::clamp(reduction, 0, max_reduction);
             }
@@ -958,6 +992,13 @@ void SearchWorker::iter_deep(SearchContext& search_context) {
     for (int depth = 1; depth <= max_depth; depth++) {
         if (search_context.stop_flag) break;
 
+        // Zahak: CanStartNewIteration (0.7 * SoftLimit)
+        if (search_context.soft_time_limit > 0) {
+             auto now = steady_clock::now();
+             long long ms = duration_cast<milliseconds>(now - search_context.start_time).count();
+             if (ms > 0.7 * search_context.soft_time_limit) break;
+        }
+
         // Sorting
         std::stable_sort(root_moves.begin(), root_moves.end(), [](const RootMove& a, const RootMove& b) {
             return a.score > b.score;
@@ -1068,6 +1109,12 @@ void SearchWorker::iter_deep(SearchContext& search_context) {
              if (have_prev) {
                  if (best_move != prev_best_move) unstable = true;
                  if (best_val < prev_best_score) unstable = true;
+
+                 // Zahak: ExtraTime
+                 if (depth >= 8 && prev_best_score - best_val >= 30) {
+                      int64_t extra = search_context.soft_time_limit / 10;
+                      search_context.soft_time_limit = std::min(search_context.hard_time_limit, search_context.soft_time_limit + extra);
+                 }
              }
              search_context.unstable_iteration.store(unstable, std::memory_order_relaxed);
              prev_best_move = best_move;

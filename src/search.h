@@ -63,7 +63,8 @@ struct SearchContext {
     int64_t nodes_limit_count = 0;
     std::atomic<bool> unstable_iteration{false};
     std::chrono::steady_clock::time_point start_time;
-    int lmr_table[64][64]{};
+    int quiet_lmr[64][64]{};
+    int noisy_lmr[64][64]{};
     std::once_flag lmr_once;
     std::unique_ptr<ThreadPool> pool;
 
