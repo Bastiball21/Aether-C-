@@ -71,6 +71,7 @@ public:
 
     // Helpers
     bool is_attacked(Square sq, Color by_side) const;
+    bool has_threats(Color color_side) const;
     bool in_check() const;
     bool is_repetition() const;
 

@@ -32,6 +32,7 @@ public:
     int16_t ContHistory[2][6][64][6][64];
     uint16_t CounterMove[2][4096];
     int KillerMoves[MAX_PLY][2];
+    int static_evals[MAX_PLY]; // Zahak: Used for improving logic
 
     void update_history(int side, int pt, int to, int bonus);
     void update_capture_history(int side, int pt, int to, int captured_pt, int bonus);

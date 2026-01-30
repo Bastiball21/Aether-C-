@@ -625,6 +625,49 @@ bool Position::is_attacked(Square sq, Color by_side) const {
     return false;
 }
 
+bool Position::has_threats(Color color_side) const {
+    Bitboard enemy_majors = pieces(ROOK, ~color_side) | pieces(QUEEN, ~color_side);
+    Bitboard enemy_queens = pieces(QUEEN, ~color_side);
+    Bitboard enemy_minors = pieces(KNIGHT, ~color_side) | pieces(BISHOP, ~color_side);
+
+    // 1. Pawn Attacks
+    Bitboard pawns = pieces(PAWN, color_side);
+    Bitboard pawn_attacks = 0;
+    if (color_side == WHITE) {
+        pawn_attacks = ((pawns << 9) & ~Bitboards::FileA) | ((pawns << 7) & ~Bitboards::FileH);
+    } else {
+        pawn_attacks = ((pawns >> 9) & ~Bitboards::FileH) | ((pawns >> 7) & ~Bitboards::FileA);
+    }
+
+    // Pawns attacking Minors, Rooks, or Queens
+    if (pawn_attacks & (enemy_minors | enemy_majors)) return true;
+
+    Bitboard occ = pieces();
+
+    // 2. Knights attacking Majors
+    Bitboard knights = pieces(KNIGHT, color_side);
+    while (knights) {
+        Square s = Bitboards::pop_lsb(knights);
+        if (Bitboards::get_knight_attacks(s) & enemy_majors) return true;
+    }
+
+    // 3. Bishops attacking Majors
+    Bitboard bishops = pieces(BISHOP, color_side);
+    while (bishops) {
+        Square s = Bitboards::pop_lsb(bishops);
+        if (Bitboards::get_bishop_attacks(s, occ) & enemy_majors) return true;
+    }
+
+    // 4. Rooks attacking Queens
+    Bitboard rooks = pieces(ROOK, color_side);
+    while (rooks) {
+        Square s = Bitboards::pop_lsb(rooks);
+        if (Bitboards::get_rook_attacks(s, occ) & enemy_queens) return true;
+    }
+
+    return false;
+}
+
 bool Position::in_check() const {
     Square ksq = (Square)Bitboards::lsb(pieces(KING, side));
     return is_attacked(ksq, ~side);
