@@ -5,6 +5,10 @@
 #include <cstring>
 #include <vector>
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
 namespace NNUE {
 
     Network* g_network = nullptr;
@@ -46,21 +50,12 @@ namespace NNUE {
         }
 
         // Read Feature Transformer Weights
-        // Order: For each bucket: Weights, Biases.
-        // File: W[768][256] (flat).
-        // Our struct: weights[NUM_BUCKETS][FEATURE_SIZE][HIDDEN_SIZE].
-        // We can read directly if layout matches.
-        // It matches.
         for (int b = 0; b < NUM_BUCKETS; ++b) {
             file.read(reinterpret_cast<char*>(weights.weights[b]), sizeof(int16_t) * FEATURE_SIZE * HIDDEN_SIZE);
             file.read(reinterpret_cast<char*>(weights.biases[b]), sizeof(int16_t) * HIDDEN_SIZE);
         }
 
         // Read Heads
-        // For each bucket:
-        // HeadA W (32x256), b (32), OutW (1x32), OutB (1)
-        // HeadB ...
-        // Gate ...
         for (int b = 0; b < NUM_BUCKETS; ++b) {
             // Head A
             file.read(reinterpret_cast<char*>(heads.head_a_weights[b]), sizeof(int8_t) * HEAD_HIDDEN_SIZE * HIDDEN_SIZE);
@@ -95,16 +90,32 @@ namespace NNUE {
     }
 
     // Linear layer: Output[j] = Sum(W[j][i] * Input[i]) + Bias[j]
-    // Weights layout: [Output][Input]
-    // Input is int16, Weights int8, Bias int32.
-    // Output is int32 (to be activated later).
     void linear_layer_imp(const int16_t* input, const int8_t* weights, const int32_t* biases, int32_t* output, int input_size, int output_size) {
         for (int j = 0; j < output_size; ++j) {
             int32_t sum = biases[j];
             const int8_t* row = weights + j * input_size;
+
+#ifdef __AVX2__
+            __m256i sum_vec = _mm256_setzero_si256();
+            for (int i = 0; i < input_size; i += 16) {
+                 __m256i in = _mm256_loadu_si256((const __m256i*)&input[i]);
+                 __m128i w8 = _mm_loadu_si128((const __m128i*)&row[i]);
+                 __m256i w16 = _mm256_cvtepi8_epi16(w8);
+                 __m256i prod = _mm256_madd_epi16(in, w16);
+                 sum_vec = _mm256_add_epi32(sum_vec, prod);
+            }
+            // Horizontal sum
+            __m128i sum_low = _mm256_castsi256_si128(sum_vec);
+            __m128i sum_high = _mm256_extracti128_si256(sum_vec, 1);
+            sum_low = _mm_add_epi32(sum_low, sum_high);
+            sum_low = _mm_hadd_epi32(sum_low, sum_low);
+            sum_low = _mm_hadd_epi32(sum_low, sum_low);
+            sum += _mm_cvtsi128_si32(sum_low);
+#else
             for (int i = 0; i < input_size; ++i) {
                 sum += (int32_t)input[i] * (int32_t)row[i];
             }
+#endif
             output[j] = sum;
         }
     }
@@ -114,30 +125,29 @@ namespace NNUE {
         int bucket = state.buckets[stm];
 
         // 1. Trunk Activation
-        int16_t trunk[HIDDEN_SIZE];
-        const int16_t* acc = state.accumulators[stm].values;
+        int16_t trunk[HIDDEN_SIZE]; // Stack allocated, likely unaligned for AVX2 aligned load
+        const int16_t* acc = state.accumulators[stm].values; // Aligned
+
+#ifdef __AVX2__
+        __m256i zero = _mm256_setzero_si256();
+        __m256i qa_vec = _mm256_set1_epi16(QA);
+        for (int i = 0; i < HIDDEN_SIZE; i += 16) {
+             __m256i v = _mm256_load_si256((const __m256i*)&acc[i]);
+             v = _mm256_max_epi16(v, zero);
+             v = _mm256_min_epi16(v, qa_vec);
+             _mm256_storeu_si256((__m256i*)&trunk[i], v);
+        }
+#else
         for (int i = 0; i < HIDDEN_SIZE; ++i) {
             trunk[i] = crelu(acc[i]);
         }
+#endif
 
         // 2. Head A
         int32_t ha_l1[HEAD_HIDDEN_SIZE];
         linear_layer_imp(trunk, heads.head_a_weights[bucket][0], heads.head_a_biases[bucket], ha_l1, HIDDEN_SIZE, HEAD_HIDDEN_SIZE);
 
         int16_t ha_l1_act[HEAD_HIDDEN_SIZE];
-        for(int i=0; i<HEAD_HIDDEN_SIZE; ++i) ha_l1_act[i] = crelu((int16_t)std::clamp(ha_l1[i], 0, 255)); // Assume activation keeps range?
-        // Note: L1 output is int32. CReLU usually expects int16 range input?
-        // If weights are int8 and input 0..255, sum can be 256*127*255 ~ 8M.
-        // We probably need to scale down before next activation?
-        // Standard quant: Output = (Sum * Scale) >> Shift.
-        // Trainer usually trains with this.
-        // I will assume simple division by (WeightScale * InputScale / OutputScale).
-        // Let's assume OutputScale = 255 (same as input).
-        // WeightScale (int8) = 64. InputScale = 255 (implicit).
-        // So we divide by 64?
-        // Let's try dividing by 64.
-        // If we don't dequantize, numbers explode.
-        // I'll assume simple shift >> 6 (div 64).
         for(int i=0; i<HEAD_HIDDEN_SIZE; ++i) ha_l1_act[i] = crelu((int16_t)(ha_l1[i] >> 6));
 
         int32_t score_a_raw;
@@ -164,53 +174,13 @@ namespace NNUE {
         linear_layer_imp(g_l1_act, heads.gate_out_weights[bucket][0], heads.gate_out_bias[bucket], &gate_raw, GATE_HIDDEN_SIZE, 1);
 
         // Sigmoid
-        // gate_raw is int32. (Scaled by 64?).
-        // If we divide by 64, we get "real" value?
-        // Sigmoid input range ~ -6..6 for active region.
-        // If gate_raw is 6 * 64 = 384.
-        double gate = 1.0 / (1.0 + std::exp(-(double)gate_raw / 64.0)); // Assume scale 64.
+        double gate = 1.0 / (1.0 + std::exp(-(double)gate_raw / 64.0));
 
         // 5. Blend
-        // score_a_raw is int32.
         double da = (double)score_a_raw;
         double db = (double)score_b_raw;
 
         double final_score = gate * da + (1.0 - gate) * db;
-
-        // Final scaling
-        // We have one more weight layer (Output weights).
-        // We didn't shift it yet.
-        // So result is scaled by 64.
-        // We want CP.
-        // If 1.0 (internal) = 1 CP?
-        // Or 100?
-        // Usually quantization aims for ~1 CP steps or similar.
-        // Let's divide by 64 (weight scale) and then apply OUTPUT_SCALE.
-        // If OUTPUT_SCALE=16 (defined in common).
-        // But let's check values.
-        // If we assume standard bullet training, outputs match target CP.
-        // So we just need to dequantize.
-        // Weights * Inputs = Scaled * Scaled.
-        // We div by 64 once. So currently Scaled * 1.
-        // So result is scaled by InputScale (255) ??
-        // No, Activation is 0..255.
-        // So we are scaled by 255 * 64 * 255 * 64?
-        // We did >> 6.
-        // So (Acc*255 -> 255).
-        // L1 = W(64) * In(255) = Scale 64*255.
-        // Shift >> 6 -> Scale 255.
-        // L2 = W(64) * In(255) = Scale 64*255.
-        // So final raw is scale 64*255?
-        // If we divide by (64 * 255), we get 1.0?
-        // Let's assume we divide by `64 * output_scale_factor`.
-        // Let's divide by 256 for now (Shift 8).
-
-        // Actually, for the trainer I will implement, I'll use simple scaling.
-        // I'll stick to: Divide by 64 (Weight Scale).
-        // And assume Input Scale 255 is "Unit".
-        // Let's just output raw >> 6 and tune later if needed.
-        // The prompt says "Output score in engine internal cp scaling".
-        // I will assume `score / 1` after dequant is CP.
 
         return (int)(final_score / 64.0);
     }
@@ -257,13 +227,10 @@ namespace NNUE {
     void Network::test() {
         std::cout << "Running NNUE unit tests..." << std::endl;
 
-        // Test CReLU
         if (crelu(300) != 255) std::cout << "FAIL: CReLU(300)" << std::endl;
         if (crelu(-10) != 0) std::cout << "FAIL: CReLU(-10)" << std::endl;
         if (crelu(100) != 100) std::cout << "FAIL: CReLU(100)" << std::endl;
 
-        // Test Sigmoid
-        // gate_raw = 0 -> 0.5
         double s0 = 1.0 / (1.0 + std::exp(0.0));
         if (std::abs(s0 - 0.5) > 0.0001) std::cout << "FAIL: Sigmoid(0)" << std::endl;
 

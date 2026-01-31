@@ -2,6 +2,10 @@
 #include "../position.h"
 #include <iostream>
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
 namespace NNUE {
 
     FeatureTransformer* g_feature_transformer = nullptr;
@@ -44,9 +48,19 @@ namespace NNUE {
 
                      // Add weights
                      const int16_t* w = weights.weights[bucket][idx];
+#ifdef __AVX2__
+                     auto* acc = state.accumulators[perspective].values;
+                     for (int i = 0; i < HIDDEN_SIZE; i += 16) {
+                         __m256i reg_acc = _mm256_load_si256((__m256i*)&acc[i]);
+                         __m256i reg_w = _mm256_load_si256((const __m256i*)&w[i]);
+                         reg_acc = _mm256_add_epi16(reg_acc, reg_w);
+                         _mm256_store_si256((__m256i*)&acc[i], reg_acc);
+                     }
+#else
                      for (int i = 0; i < HIDDEN_SIZE; ++i) {
                          state.accumulators[perspective].values[i] += w[i];
                      }
+#endif
                 }
             }
         }
@@ -79,9 +93,19 @@ namespace NNUE {
                              idx = 384 + 64 * pt + (sq ^ 56);
                         }
                         const int16_t* w = weights.weights[bucket][idx];
+#ifdef __AVX2__
+                        auto* acc = next.accumulators[c].values;
+                        for (int i = 0; i < HIDDEN_SIZE; i += 16) {
+                            __m256i reg_acc = _mm256_load_si256((__m256i*)&acc[i]);
+                            __m256i reg_w = _mm256_load_si256((const __m256i*)&w[i]);
+                            reg_acc = _mm256_add_epi16(reg_acc, reg_w);
+                            _mm256_store_si256((__m256i*)&acc[i], reg_acc);
+                        }
+#else
                         for (int i = 0; i < HIDDEN_SIZE; ++i) {
                              next.accumulators[c].values[i] += w[i];
                         }
+#endif
                     }
                 }
             } else {
@@ -101,13 +125,33 @@ namespace NNUE {
 
                     const int16_t* w = weights.weights[bucket][idx];
                     if (u.add) {
+#ifdef __AVX2__
+                        auto* acc = next.accumulators[c].values;
+                        for (int i = 0; i < HIDDEN_SIZE; i += 16) {
+                            __m256i reg_acc = _mm256_load_si256((__m256i*)&acc[i]);
+                            __m256i reg_w = _mm256_load_si256((const __m256i*)&w[i]);
+                            reg_acc = _mm256_add_epi16(reg_acc, reg_w);
+                            _mm256_store_si256((__m256i*)&acc[i], reg_acc);
+                        }
+#else
                         for (int i = 0; i < HIDDEN_SIZE; ++i) {
                             next.accumulators[c].values[i] += w[i];
                         }
+#endif
                     } else {
+#ifdef __AVX2__
+                        auto* acc = next.accumulators[c].values;
+                        for (int i = 0; i < HIDDEN_SIZE; i += 16) {
+                            __m256i reg_acc = _mm256_load_si256((__m256i*)&acc[i]);
+                            __m256i reg_w = _mm256_load_si256((const __m256i*)&w[i]);
+                            reg_acc = _mm256_sub_epi16(reg_acc, reg_w);
+                            _mm256_store_si256((__m256i*)&acc[i], reg_acc);
+                        }
+#else
                         for (int i = 0; i < HIDDEN_SIZE; ++i) {
                             next.accumulators[c].values[i] -= w[i];
                         }
+#endif
                     }
                 }
             }
